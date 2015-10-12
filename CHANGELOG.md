@@ -1,3 +1,28 @@
+## 0.4.0 (Unreleased)
+
+DEPRECATIONS/BREAKING CHANGES:
+
+ * Policy Name Casing: Policy names are now normalized to lower-case on write, helping prevent accidental case mismatches. For backwards compatibility, policy names are not currently normalized when reading or deleting. [GH-676]
+
+IMPROVEMENTS:
+
+ * api: API client now uses a 30 second timeout instead of indefinite [GH-681]
+ * core: Tokens can now renew themselves [GH-455]
+ * core: Base64-encoded PGP keys can be used with the CLI for `init` and `rekey` operations [GH-653]
+ * logical: Responses now contain a "warnings" key containing a list of warnings returned from the server. These are conditions that did not require failing an operation, but of which the client should be aware. [GH-676]
+
+BUG FIXES:
+
+ * api: API client now checks for a 301 response for redirects. Vault doesn't generate these, but in certain conditions Go's internal HTTP handler can generate them, leading to client errors.
+ * cli: `token-create` now supports the `ttl` parameter in addition to the deprecated `lease` parameter. [GH-688]
+ * core: Fix upgrade path for leases created in `generic` prior to 0.3 [GH-673]
+ * core: Stale leader entries will now be reaped [GH-679]
+ * core: Using `mount-tune` on the auth/token path did not take effect. [GH-688]
+
+MISC:
+
+ * Various documentation fixes and improvements [GH-685] [GH-688]
+
 ## 0.3.1 (October 6, 2015)
 
 SECURITY:
