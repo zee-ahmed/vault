@@ -2,26 +2,29 @@ package physical
 
 import (
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-	"net/http"
-	"io/ioutil"
 
 	"crypto/tls"
 	"crypto/x509"
 
 	"github.com/armon/go-metrics"
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/errwrap"
 )
 
 // ConsulBackend is a physical backend that stores data at specific
 // prefix within Consul. It is used for most production situations as
 // it allows Vault to run on multiple machines in a highly-available manner.
 type ConsulBackend struct {
-	path   string
-	client *api.Client
-	kv     *api.KV
+	path       string
+	client     *api.Client
+	kv         *api.KV
+	permitPool *PermitPool
 }
 
 // newConsulBackend constructs a Consul backend using the given API client
@@ -43,14 +46,12 @@ func newConsulBackend(conf map[string]string) (Backend, error) {
 
 	// Configure the client
 	consulConf := api.DefaultConfig()
+
 	if addr, ok := conf["address"]; ok {
 		consulConf.Address = addr
 	}
 	if scheme, ok := conf["scheme"]; ok {
 		consulConf.Scheme = scheme
-	}
-	if dc, ok := conf["datacenter"]; ok {
-		consulConf.Datacenter = dc
 	}
 	if token, ok := conf["token"]; ok {
 		consulConf.Token = token
@@ -69,14 +70,24 @@ func newConsulBackend(conf map[string]string) (Backend, error) {
 
 	client, err := api.NewClient(consulConf)
 	if err != nil {
-		return nil, fmt.Errorf("client setup failed: %v", err)
+		return nil, errwrap.Wrapf("client setup failed: {{err}}", err)
+	}
+
+	maxParStr, ok := conf["max_parallel"]
+	var maxParInt int
+	if ok {
+		maxParInt, err = strconv.Atoi(maxParStr)
+		if err != nil {
+			return nil, errwrap.Wrapf("failed parsing max_parallel parameter: {{err}}", err)
+		}
 	}
 
 	// Setup the backend
 	c := &ConsulBackend{
-		path:   path,
-		client: client,
-		kv:     client.KV(),
+		path:       path,
+		client:     client,
+		kv:         client.KV(),
+		permitPool: NewPermitPool(maxParInt),
 	}
 	return c, nil
 }
@@ -95,7 +106,7 @@ func setupTLSConfig(conf map[string]string) (*tls.Config, error) {
 	}
 
 	_, okCert := conf["tls_cert_file"]
-	_, okKey  := conf["tls_key_file"]
+	_, okKey := conf["tls_key_file"]
 
 	if okCert && okKey {
 		tlsCert, err := tls.LoadX509KeyPair(conf["tls_cert_file"], conf["tls_key_file"])
@@ -131,6 +142,10 @@ func (c *ConsulBackend) Put(entry *Entry) error {
 		Key:   c.path + entry.Key,
 		Value: entry.Value,
 	}
+
+	c.permitPool.Acquire()
+	defer c.permitPool.Release()
+
 	_, err := c.kv.Put(pair, nil)
 	return err
 }
@@ -138,6 +153,10 @@ func (c *ConsulBackend) Put(entry *Entry) error {
 // Get is used to fetch an entry
 func (c *ConsulBackend) Get(key string) (*Entry, error) {
 	defer metrics.MeasureSince([]string{"consul", "get"}, time.Now())
+
+	c.permitPool.Acquire()
+	defer c.permitPool.Release()
+
 	pair, _, err := c.kv.Get(c.path+key, nil)
 	if err != nil {
 		return nil, err
@@ -155,6 +174,10 @@ func (c *ConsulBackend) Get(key string) (*Entry, error) {
 // Delete is used to permanently delete an entry
 func (c *ConsulBackend) Delete(key string) error {
 	defer metrics.MeasureSince([]string{"consul", "delete"}, time.Now())
+
+	c.permitPool.Acquire()
+	defer c.permitPool.Release()
+
 	_, err := c.kv.Delete(c.path+key, nil)
 	return err
 }
@@ -164,6 +187,10 @@ func (c *ConsulBackend) Delete(key string) error {
 func (c *ConsulBackend) List(prefix string) ([]string, error) {
 	defer metrics.MeasureSince([]string{"consul", "list"}, time.Now())
 	scan := c.path + prefix
+
+	c.permitPool.Acquire()
+	defer c.permitPool.Release()
+
 	out, _, err := c.kv.Keys(scan, "/", nil)
 	for idx, val := range out {
 		out[idx] = strings.TrimPrefix(val, scan)
@@ -176,9 +203,10 @@ func (c *ConsulBackend) List(prefix string) ([]string, error) {
 func (c *ConsulBackend) LockWith(key, value string) (Lock, error) {
 	// Create the lock
 	opts := &api.LockOptions{
-		Key:         c.path + key,
-		Value:       []byte(value),
-		SessionName: "Vault Lock",
+		Key:            c.path + key,
+		Value:          []byte(value),
+		SessionName:    "Vault Lock",
+		MonitorRetries: 5,
 	}
 	lock, err := c.client.LockOpts(opts)
 	if err != nil {
@@ -220,6 +248,7 @@ func (c *ConsulLock) Unlock() error {
 
 func (c *ConsulLock) Value() (bool, string, error) {
 	kv := c.client.KV()
+
 	pair, _, err := kv.Get(c.key, nil)
 	if err != nil {
 		return false, "", err

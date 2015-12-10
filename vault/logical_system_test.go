@@ -1,23 +1,22 @@
 package vault
 
 import (
+	"crypto/sha256"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/fatih/structs"
 	"github.com/hashicorp/vault/audit"
+	"github.com/hashicorp/vault/helper/salt"
 	"github.com/hashicorp/vault/logical"
 )
 
 func TestSystemBackend_RootPaths(t *testing.T) {
 	expected := []string{
-		"mounts/*",
 		"auth/*",
 		"remount",
 		"revoke-prefix/*",
-		"policy",
-		"policy/*",
 		"audit",
 		"audit/*",
 		"seal",
@@ -433,7 +432,7 @@ func TestSystemBackend_policyList(t *testing.T) {
 	}
 
 	exp := map[string]interface{}{
-		"keys": []string{"root"},
+		"keys": []string{"default", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -445,7 +444,7 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 
 	// Create the policy
 	rules := `path "foo/" { policy = "read" }`
-	req := logical.TestRequest(t, logical.WriteOperation, "policy/foo")
+	req := logical.TestRequest(t, logical.WriteOperation, "policy/Foo")
 	req.Data["rules"] = rules
 	resp, err := b.HandleRequest(req)
 	if err != nil {
@@ -470,6 +469,13 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
 	}
 
+	// Read, and make sure that case has been normalized
+	req = logical.TestRequest(t, logical.ReadOperation, "policy/Foo")
+	resp, err = b.HandleRequest(req)
+	if resp != nil {
+		t.Fatalf("err: expected nil response, got %#v", *resp)
+	}
+
 	// List the policies
 	req = logical.TestRequest(t, logical.ReadOperation, "policy")
 	resp, err = b.HandleRequest(req)
@@ -478,7 +484,7 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 	}
 
 	exp = map[string]interface{}{
-		"keys": []string{"foo", "root"},
+		"keys": []string{"default", "foo", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -512,7 +518,7 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 	}
 
 	exp = map[string]interface{}{
-		"keys": []string{"root"},
+		"keys": []string{"default", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -536,6 +542,57 @@ func TestSystemBackend_enableAudit(t *testing.T) {
 	}
 	if resp != nil {
 		t.Fatalf("bad: %v", resp)
+	}
+}
+
+func TestSystemBackend_auditHash(t *testing.T) {
+	c, b, _ := testCoreSystemBackend(t)
+	c.auditBackends["noop"] = func(config *audit.BackendConfig) (audit.Backend, error) {
+		view := &logical.InmemStorage{}
+		view.Put(&logical.StorageEntry{
+			Key:   "salt",
+			Value: []byte("foo"),
+		})
+		var err error
+		config.Salt, err = salt.NewSalt(view, &salt.Config{
+			HMAC:     sha256.New,
+			HMACType: "hmac-sha256",
+		})
+		if err != nil {
+			t.Fatal("error getting new salt: %v", err)
+		}
+		return &NoopAudit{
+			Config: config,
+		}, nil
+	}
+
+	req := logical.TestRequest(t, logical.WriteOperation, "audit/foo")
+	req.Data["type"] = "noop"
+
+	resp, err := b.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if resp != nil {
+		t.Fatalf("bad: %v", resp)
+	}
+
+	req = logical.TestRequest(t, logical.WriteOperation, "audit-hash/foo")
+	req.Data["input"] = "bar"
+
+	resp, err = b.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if resp == nil || resp.Data == nil {
+		t.Fatalf("response or its data was nil")
+	}
+	hash, ok := resp.Data["hash"]
+	if !ok {
+		t.Fatalf("did not get hash back in response, response was %#v", resp.Data)
+	}
+	if hash.(string) != "hmac-sha256:f9320baf0249169e73850cd6156ded0106e2bb6ad8cab01b7bbbebe6d1065317" {
+		t.Fatalf("bad hash back: %s", hash.(string))
 	}
 }
 
@@ -675,7 +732,7 @@ func TestSystemBackend_rawWrite(t *testing.T) {
 	}
 
 	// Read the policy!
-	p, err := c.policy.GetPolicy("test")
+	p, err := c.policyStore.GetPolicy("test")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -702,7 +759,7 @@ func TestSystemBackend_rawDelete(t *testing.T) {
 
 	// set the policy!
 	p := &Policy{Name: "test"}
-	err := c.policy.SetPolicy(p)
+	err := c.policyStore.SetPolicy(p)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -718,8 +775,8 @@ func TestSystemBackend_rawDelete(t *testing.T) {
 	}
 
 	// Policy should be gone
-	c.policy.lru.Purge()
-	out, err := c.policy.GetPolicy("test")
+	c.policyStore.lru.Purge()
+	out, err := c.policyStore.GetPolicy("test")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -55,21 +56,21 @@ type frameOp byte
 const (
 	// header ops
 	opError         frameOp = 0x00
-	opStartup               = 0x01
-	opReady                 = 0x02
-	opAuthenticate          = 0x03
-	opOptions               = 0x05
-	opSupported             = 0x06
-	opQuery                 = 0x07
-	opResult                = 0x08
-	opPrepare               = 0x09
-	opExecute               = 0x0A
-	opRegister              = 0x0B
-	opEvent                 = 0x0C
-	opBatch                 = 0x0D
-	opAuthChallenge         = 0x0E
-	opAuthResponse          = 0x0F
-	opAuthSuccess           = 0x10
+	opStartup       frameOp = 0x01
+	opReady         frameOp = 0x02
+	opAuthenticate  frameOp = 0x03
+	opOptions       frameOp = 0x05
+	opSupported     frameOp = 0x06
+	opQuery         frameOp = 0x07
+	opResult        frameOp = 0x08
+	opPrepare       frameOp = 0x09
+	opExecute       frameOp = 0x0A
+	opRegister      frameOp = 0x0B
+	opEvent         frameOp = 0x0C
+	opBatch         frameOp = 0x0D
+	opAuthChallenge frameOp = 0x0E
+	opAuthResponse  frameOp = 0x0F
+	opAuthSuccess   frameOp = 0x10
 )
 
 func (f frameOp) String() string {
@@ -121,17 +122,17 @@ const (
 
 	// rows flags
 	flagGlobalTableSpec int = 0x01
-	flagHasMorePages        = 0x02
-	flagNoMetaData          = 0x04
+	flagHasMorePages    int = 0x02
+	flagNoMetaData      int = 0x04
 
 	// query flags
 	flagValues                byte = 0x01
-	flagSkipMetaData               = 0x02
-	flagPageSize                   = 0x04
-	flagWithPagingState            = 0x08
-	flagWithSerialConsistency      = 0x10
-	flagDefaultTimestamp           = 0x20
-	flagWithNameValues             = 0x40
+	flagSkipMetaData          byte = 0x02
+	flagPageSize              byte = 0x04
+	flagWithPagingState       byte = 0x08
+	flagWithSerialConsistency byte = 0x10
+	flagDefaultTimestamp      byte = 0x20
+	flagWithNameValues        byte = 0x40
 
 	// header flags
 	flagCompress      byte = 0x01
@@ -176,6 +177,31 @@ func (c Consistency) String() string {
 		return "LOCAL_ONE"
 	default:
 		return fmt.Sprintf("UNKNOWN_CONS_0x%x", uint16(c))
+	}
+}
+
+func ParseConsistency(s string) Consistency {
+	switch strings.ToUpper(s) {
+	case "ANY":
+		return Any
+	case "ONE":
+		return One
+	case "TWO":
+		return Two
+	case "THREE":
+		return Three
+	case "QUORUM":
+		return Quorum
+	case "ALL":
+		return All
+	case "LOCAL_QUORUM":
+		return LocalQuorum
+	case "EACH_QUORUM":
+		return EachQuorum
+	case "LOCAL_ONE":
+		return LocalOne
+	default:
+		panic("invalid consistency: " + s)
 	}
 }
 
@@ -500,7 +526,7 @@ func (f *framer) parseErrorFrame() frame {
 		stmtId := f.readShortBytes()
 		return &RequestErrUnprepared{
 			errorFrame:  errD,
-			StatementId: stmtId,
+			StatementId: copyBytes(stmtId), // defensivly copy
 		}
 	case errReadFailure:
 		res := &RequestErrReadFailure{
@@ -1371,6 +1397,17 @@ func (f *framer) writeBatchFrame(streamID int, w *writeBatchFrame) error {
 	return f.finishWrite()
 }
 
+type writeOptionsFrame struct{}
+
+func (w *writeOptionsFrame) writeFrame(framer *framer, streamID int) error {
+	return framer.writeOptionsFrame(streamID, w)
+}
+
+func (f *framer) writeOptionsFrame(stream int, _ *writeOptionsFrame) error {
+	f.writeHeader(f.flags, opOptions, stream)
+	return f.finishWrite()
+}
+
 func (f *framer) readByte() byte {
 	if len(f.rbuf) < 1 {
 		panic(fmt.Errorf("not enough bytes in buffer to read byte require 1 got: %d", len(f.rbuf)))
@@ -1466,13 +1503,7 @@ func (f *framer) readBytes() []byte {
 		panic(fmt.Errorf("not enough bytes in buffer to read bytes require %d got: %d", size, len(f.rbuf)))
 	}
 
-	// we cant make assumptions about the length of the life of the supplied byte
-	// slice so we defensivly copy it out of the underlying buffer. This has the
-	// downside of increasing allocs per read but will provide much greater memory
-	// safety. The allocs can hopefully be improved in the future.
-	// TODO: dont copy into a new slice
-	l := make([]byte, size)
-	copy(l, f.rbuf[:size])
+	l := f.rbuf[:size]
 	f.rbuf = f.rbuf[size:]
 
 	return l
@@ -1484,8 +1515,7 @@ func (f *framer) readShortBytes() []byte {
 		panic(fmt.Errorf("not enough bytes in buffer to read short bytes: require %d got %d", size, len(f.rbuf)))
 	}
 
-	l := make([]byte, size)
-	copy(l, f.rbuf[:size])
+	l := f.rbuf[:size]
 	f.rbuf = f.rbuf[size:]
 
 	return l
@@ -1549,25 +1579,22 @@ func (f *framer) writeByte(b byte) {
 	f.wbuf = append(f.wbuf, b)
 }
 
-// these are protocol level binary types
-func (f *framer) writeInt(n int32) {
-	f.wbuf = append(f.wbuf,
-		byte(n>>24),
+func appendShort(p []byte, n uint16) []byte {
+	return append(p,
+		byte(n>>8),
+		byte(n),
+	)
+}
+
+func appendInt(p []byte, n int32) []byte {
+	return append(p, byte(n>>24),
 		byte(n>>16),
 		byte(n>>8),
-		byte(n),
-	)
+		byte(n))
 }
 
-func (f *framer) writeShort(n uint16) {
-	f.wbuf = append(f.wbuf,
-		byte(n>>8),
-		byte(n),
-	)
-}
-
-func (f *framer) writeLong(n int64) {
-	f.wbuf = append(f.wbuf,
+func appendLong(p []byte, n int64) []byte {
+	return append(p,
 		byte(n>>56),
 		byte(n>>48),
 		byte(n>>40),
@@ -1577,6 +1604,19 @@ func (f *framer) writeLong(n int64) {
 		byte(n>>8),
 		byte(n),
 	)
+}
+
+// these are protocol level binary types
+func (f *framer) writeInt(n int32) {
+	f.wbuf = appendInt(f.wbuf, n)
+}
+
+func (f *framer) writeShort(n uint16) {
+	f.wbuf = appendShort(f.wbuf, n)
+}
+
+func (f *framer) writeLong(n int64) {
+	f.wbuf = appendLong(f.wbuf, n)
 }
 
 func (f *framer) writeString(s string) {

@@ -16,8 +16,8 @@ type TokenCreateCommand struct {
 
 func (c *TokenCreateCommand) Run(args []string) int {
 	var format string
-	var id, displayName, lease string
-	var orphan bool
+	var id, displayName, lease, ttl string
+	var orphan, noDefaultPolicy bool
 	var metadata map[string]string
 	var numUses int
 	var policies []string
@@ -26,7 +26,9 @@ func (c *TokenCreateCommand) Run(args []string) int {
 	flags.StringVar(&displayName, "display-name", "", "")
 	flags.StringVar(&id, "id", "", "")
 	flags.StringVar(&lease, "lease", "", "")
+	flags.StringVar(&ttl, "ttl", "", "")
 	flags.BoolVar(&orphan, "orphan", false, "")
+	flags.BoolVar(&noDefaultPolicy, "no-default-policy", false, "")
 	flags.IntVar(&numUses, "use-limit", 0, "")
 	flags.Var((*kvFlag.Flag)(&metadata), "metadata", "")
 	flags.Var((*sliceflag.StringFlag)(&policies), "policy", "")
@@ -50,15 +52,20 @@ func (c *TokenCreateCommand) Run(args []string) int {
 		return 2
 	}
 
+	if ttl == "" {
+		ttl = lease
+	}
 	secret, err := client.Auth().Token().Create(&api.TokenCreateRequest{
-		ID:          id,
-		Policies:    policies,
-		Metadata:    metadata,
-		Lease:       lease,
-		NoParent:    orphan,
-		DisplayName: displayName,
-		NumUses:     numUses,
+		ID:              id,
+		Policies:        policies,
+		Metadata:        metadata,
+		TTL:             ttl,
+		NoParent:        orphan,
+		NoDefaultPolicy: noDefaultPolicy,
+		DisplayName:     displayName,
+		NumUses:         numUses,
 	})
+
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf(
 			"Error creating token: %s", err))
@@ -97,14 +104,16 @@ Token Options:
 
   -id="7699125c-d8...."   The token value that clients will use to authenticate
                           with vault. If not provided this defaults to a 36
-                          character UUID. A root token is required to specify 
+                          character UUID. A root token is required to specify
                           the ID of a token.
 
   -display-name="name"    A display name to associate with this token. This
                           is a non-security sensitive value used to help
                           identify created secrets, i.e. prefixes.
 
-  -lease="1h"             Lease to associate with the token. This option enables
+  -lease="1h"             Deprecated; use "-ttl" instead.
+
+  -ttl="1h"               TTL to associate with the token. This option enables
                           the tokens to be renewable.
 
   -metadata="key=value"   Metadata to associate with the token. This shows
@@ -114,6 +123,9 @@ Token Options:
   -orphan                 If specified, the token will have no parent. Only
                           root tokens can create orphan tokens. This prevents
                           the new token from being revoked with your token.
+
+  -no-default-policy      If specified, the token will not have the "default"
+                          policy included in its policy set.
 
   -policy="name"          Policy to associate with this token. This can be
                           specified multiple times.

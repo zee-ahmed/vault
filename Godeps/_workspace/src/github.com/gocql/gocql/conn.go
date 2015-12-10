@@ -18,7 +18,25 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gocql/gocql/internal/streams"
 )
+
+var (
+	approvedAuthenticators = [...]string{
+		"org.apache.cassandra.auth.PasswordAuthenticator",
+		"com.instaclustr.cassandra.auth.SharedSecretAuthenticator",
+	}
+)
+
+func approve(authenticator string) bool {
+	for _, s := range approvedAuthenticators {
+		if authenticator == s {
+			return true
+		}
+	}
+	return false
+}
 
 //JoinHostPort is a utility to return a address string that can be used
 //gocql.Conn to form a connection with a host.
@@ -41,7 +59,7 @@ type PasswordAuthenticator struct {
 }
 
 func (p PasswordAuthenticator) Challenge(req []byte) ([]byte, Authenticator, error) {
-	if string(req) != "org.apache.cassandra.auth.PasswordAuthenticator" {
+	if !approve(string(req)) {
 		return nil, nil, fmt.Errorf("unexpected authenticator %q", req)
 	}
 	resp := make([]byte, 2+len(p.Username)+len(p.Password))
@@ -75,7 +93,6 @@ type ConnConfig struct {
 	ProtoVersion  int
 	CQLVersion    string
 	Timeout       time.Duration
-	NumStreams    int
 	Compressor    Compressor
 	Authenticator Authenticator
 	Keepalive     time.Duration
@@ -99,11 +116,13 @@ type Conn struct {
 	conn    net.Conn
 	r       *bufio.Reader
 	timeout time.Duration
+	cfg     *ConnConfig
 
 	headerBuf []byte
 
-	uniq  chan int
-	calls []callReq
+	streams *streams.IDGenerator
+	mu      sync.RWMutex
+	calls   map[int]*callReq
 
 	errorHandler    ConnErrorHandler
 	compressor      Compressor
@@ -113,6 +132,8 @@ type Conn struct {
 	currentKeyspace string
 	started         bool
 
+	session *Session
+
 	closed int32
 	quit   chan struct{}
 
@@ -121,7 +142,7 @@ type Conn struct {
 
 // Connect establishes a connection to a Cassandra node.
 // You must also call the Serve method before you can execute any queries.
-func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn, error) {
+func Connect(addr string, cfg *ConnConfig, errorHandler ConnErrorHandler, session *Session) (*Conn, error) {
 	var (
 		err  error
 		conn net.Conn
@@ -150,24 +171,15 @@ func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn,
 	}
 
 	headerSize := 8
-
-	maxStreams := 128
 	if cfg.ProtoVersion > protoVersion2 {
-		maxStreams = 32768
 		headerSize = 9
-	}
-
-	if cfg.NumStreams <= 0 || cfg.NumStreams >= maxStreams {
-		cfg.NumStreams = maxStreams
-	} else {
-		cfg.NumStreams++
 	}
 
 	c := &Conn{
 		conn:         conn,
 		r:            bufio.NewReader(conn),
-		uniq:         make(chan int, cfg.NumStreams),
-		calls:        make([]callReq, cfg.NumStreams),
+		cfg:          cfg,
+		calls:        make(map[int]*callReq),
 		timeout:      cfg.Timeout,
 		version:      uint8(cfg.ProtoVersion),
 		addr:         conn.RemoteAddr().String(),
@@ -176,22 +188,17 @@ func Connect(addr string, cfg ConnConfig, errorHandler ConnErrorHandler) (*Conn,
 		auth:         cfg.Authenticator,
 		headerBuf:    make([]byte, headerSize),
 		quit:         make(chan struct{}),
+		session:      session,
+		streams:      streams.New(cfg.ProtoVersion),
 	}
 
 	if cfg.Keepalive > 0 {
 		c.setKeepalive(cfg.Keepalive)
 	}
 
-	// reserve stream 0 incase cassandra returns an error on it without us sending
-	// a request.
-	for i := 1; i < cfg.NumStreams; i++ {
-		c.calls[i].resp = make(chan error)
-		c.uniq <- i
-	}
-
 	go c.serve()
 
-	if err := c.startup(&cfg); err != nil {
+	if err := c.startup(); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -231,16 +238,21 @@ func (c *Conn) Read(p []byte) (n int, err error) {
 	return
 }
 
-func (c *Conn) startup(cfg *ConnConfig) error {
+func (c *Conn) startup() error {
 	m := map[string]string{
-		"CQL_VERSION": cfg.CQLVersion,
+		"CQL_VERSION": c.cfg.CQLVersion,
 	}
 
 	if c.compressor != nil {
 		m["COMPRESSION"] = c.compressor.Name()
 	}
 
-	frame, err := c.exec(&writeStartupFrame{opts: m}, nil)
+	framer, err := c.exec(&writeStartupFrame{opts: m}, nil)
+	if err != nil {
+		return err
+	}
+
+	frame, err := framer.parseFrame()
 	if err != nil {
 		return err
 	}
@@ -270,7 +282,12 @@ func (c *Conn) authenticateHandshake(authFrame *authenticateFrame) error {
 	req := &writeAuthResponseFrame{data: resp}
 
 	for {
-		frame, err := c.exec(req, nil)
+		framer, err := c.exec(req, nil)
+		if err != nil {
+			return err
+		}
+
+		frame, err := framer.parseFrame()
 		if err != nil {
 			return err
 		}
@@ -295,6 +312,8 @@ func (c *Conn) authenticateHandshake(authFrame *authenticateFrame) error {
 		default:
 			return fmt.Errorf("unknown frame response during authentication: %v", v)
 		}
+
+		framerPool.Put(framer)
 	}
 }
 
@@ -306,8 +325,8 @@ func (c *Conn) closeWithError(err error) {
 	if err != nil {
 		// we should attempt to deliver the error back to the caller if it
 		// exists
-		for id := 0; id < len(c.calls); id++ {
-			req := &c.calls[id]
+		c.mu.RLock()
+		for _, req := range c.calls {
 			// we need to send the error to all waiting queries, put the state
 			// of this conn into not active so that it can not execute any queries.
 			if err != nil {
@@ -317,6 +336,7 @@ func (c *Conn) closeWithError(err error) {
 				}
 			}
 		}
+		c.mu.RUnlock()
 	}
 
 	// if error was nil then unblock the quit channel
@@ -350,6 +370,14 @@ func (c *Conn) serve() {
 	c.closeWithError(err)
 }
 
+func (c *Conn) discardFrame(head frameHeader) error {
+	_, err := io.CopyN(ioutil.Discard, c, int64(head.length))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *Conn) recv() error {
 	// not safe for concurrent reads
 
@@ -365,15 +393,11 @@ func (c *Conn) recv() error {
 		return err
 	}
 
-	if head.stream > len(c.calls) {
+	if head.stream > c.streams.NumStreams {
 		return fmt.Errorf("gocql: frame header stream is beyond call exepected bounds: %d", head.stream)
 	} else if head.stream == -1 {
 		// TODO: handle cassandra event frames, we shouldnt get any currently
-		_, err := io.CopyN(ioutil.Discard, c, int64(head.length))
-		if err != nil {
-			return err
-		}
-		return nil
+		return c.discardFrame(head)
 	} else if head.stream <= 0 {
 		// reserved stream that we dont use, probably due to a protocol error
 		// or a bug in Cassandra, this should be an error, parse it and return.
@@ -381,6 +405,7 @@ func (c *Conn) recv() error {
 		if err := framer.readFrame(&head); err != nil {
 			return err
 		}
+		defer framerPool.Put(framer)
 
 		frame, err := framer.parseFrame()
 		if err != nil {
@@ -395,7 +420,14 @@ func (c *Conn) recv() error {
 		}
 	}
 
-	call := &c.calls[head.stream]
+	c.mu.RLock()
+	call, ok := c.calls[head.stream]
+	c.mu.RUnlock()
+	if call == nil || call.framer == nil || !ok {
+		log.Printf("gocql: received response for stream which has no handler: header=%v\n", head)
+		return c.discardFrame(head)
+	}
+
 	err = call.framer.readFrame(&head)
 	if err != nil {
 		// only net errors should cause the connection to be closed. Though
@@ -419,20 +451,25 @@ func (c *Conn) recv() error {
 
 type callReq struct {
 	// could use a waitgroup but this allows us to do timeouts on the read/send
-	resp    chan error
-	framer  *framer
-	timeout chan struct{} // indicates to recv() that a call has timedout
+	resp     chan error
+	framer   *framer
+	timeout  chan struct{} // indicates to recv() that a call has timedout
+	streamID int           // current stream in use
 }
 
 func (c *Conn) releaseStream(stream int) {
-	call := &c.calls[stream]
-	framerPool.Put(call.framer)
-	call.framer = nil
-
-	select {
-	case c.uniq <- stream:
-	case <-c.quit:
+	c.mu.Lock()
+	call := c.calls[stream]
+	if call != nil && stream != call.streamID {
+		panic(fmt.Sprintf("attempt to release streamID with ivalid stream: %d -> %+v\n", stream, call))
+	} else if call == nil {
+		panic(fmt.Sprintf("releasing a stream not in use: %d", stream))
 	}
+	delete(c.calls, stream)
+	c.mu.Unlock()
+
+	streamPool.Put(call)
+	c.streams.Clear(stream)
 }
 
 func (c *Conn) handleTimeout() {
@@ -441,20 +478,41 @@ func (c *Conn) handleTimeout() {
 	}
 }
 
-func (c *Conn) exec(req frameWriter, tracer Tracer) (frame, error) {
+var (
+	streamPool = sync.Pool{
+		New: func() interface{} {
+			return &callReq{
+				resp: make(chan error),
+			}
+		},
+	}
+)
+
+func (c *Conn) exec(req frameWriter, tracer Tracer) (*framer, error) {
 	// TODO: move tracer onto conn
-	var stream int
-	select {
-	case stream = <-c.uniq:
-	case <-c.quit:
-		return nil, ErrConnectionClosed
+	stream, ok := c.streams.GetStream()
+	if !ok {
+		fmt.Println(c.streams)
+		return nil, ErrNoStreams
 	}
 
 	// resp is basically a waiting semaphore protecting the framer
 	framer := newFramer(c, c, c.compressor, c.version)
-	call := &c.calls[stream]
+
+	c.mu.Lock()
+	call := c.calls[stream]
+	if call != nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("attempting to use stream already in use: %d -> %d", stream, call.streamID)
+	} else {
+		call = streamPool.Get().(*callReq)
+	}
+	c.calls[stream] = call
+	c.mu.Unlock()
+
 	call.framer = framer
 	call.timeout = make(chan struct{})
+	call.streamID = stream
 
 	if tracer != nil {
 		framer.trace()
@@ -503,19 +561,10 @@ func (c *Conn) exec(req frameWriter, tracer Tracer) (frame, error) {
 		return nil, NewErrProtocol("unexpected protocol version in response: got %d expected %d", v, c.version)
 	}
 
-	frame, err := framer.parseFrame()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(framer.traceID) > 0 {
-		tracer.Trace(framer.traceID)
-	}
-
-	return frame, nil
+	return framer, nil
 }
 
-func (c *Conn) prepareStatement(stmt string, trace Tracer) (*resultPreparedFrame, error) {
+func (c *Conn) prepareStatement(stmt string, tracer Tracer) (*QueryInfo, error) {
 	stmtsLRU.Lock()
 	if stmtsLRU.lru == nil {
 		initStmtsLRU(defaultMaxPreparedStmts)
@@ -527,7 +576,7 @@ func (c *Conn) prepareStatement(stmt string, trace Tracer) (*resultPreparedFrame
 		stmtsLRU.Unlock()
 		flight := val.(*inflightPrepare)
 		flight.wg.Wait()
-		return flight.info, flight.err
+		return &flight.info, flight.err
 	}
 
 	flight := new(inflightPrepare)
@@ -539,16 +588,36 @@ func (c *Conn) prepareStatement(stmt string, trace Tracer) (*resultPreparedFrame
 		statement: stmt,
 	}
 
-	resp, err := c.exec(prep, trace)
+	framer, err := c.exec(prep, tracer)
 	if err != nil {
 		flight.err = err
 		flight.wg.Done()
 		return nil, err
 	}
 
-	switch x := resp.(type) {
+	frame, err := framer.parseFrame()
+	if err != nil {
+		flight.err = err
+		flight.wg.Done()
+		return nil, err
+	}
+
+	// TODO(zariel): tidy this up, simplify handling of frame parsing so its not duplicated
+	// everytime we need to parse a frame.
+	if len(framer.traceID) > 0 {
+		tracer.Trace(framer.traceID)
+	}
+
+	switch x := frame.(type) {
 	case *resultPreparedFrame:
-		flight.info = x
+		// defensivly copy as we will recycle the underlying buffer after we
+		// return.
+		flight.info.Id = copyBytes(x.preparedID)
+		// the type info's should _not_ have a reference to the framers read buffer,
+		// therefore we can just copy them directly.
+		flight.info.Args = x.reqMeta.columns
+		flight.info.PKeyColumns = x.reqMeta.pkeyColumns
+		flight.info.Rval = x.respMeta.columns
 	case error:
 		flight.err = x
 	default:
@@ -562,7 +631,9 @@ func (c *Conn) prepareStatement(stmt string, trace Tracer) (*resultPreparedFrame
 		stmtsLRU.Unlock()
 	}
 
-	return flight.info, flight.err
+	framerPool.Put(framer)
+
+	return &flight.info, flight.err
 }
 
 func (c *Conn) executeQuery(qry *Query) *Iter {
@@ -594,24 +665,19 @@ func (c *Conn) executeQuery(qry *Query) *Iter {
 		if qry.binding == nil {
 			values = qry.values
 		} else {
-			binding := &QueryInfo{
-				Id:   info.preparedID,
-				Args: info.reqMeta.columns,
-				Rval: info.respMeta.columns,
-			}
-
-			values, err = qry.binding(binding)
+			values, err = qry.binding(info)
 			if err != nil {
 				return &Iter{err: err}
 			}
 		}
 
-		if len(values) != len(info.reqMeta.columns) {
+		if len(values) != len(info.Args) {
 			return &Iter{err: ErrQueryArgLength}
 		}
+
 		params.values = make([]queryValues, len(values))
 		for i := 0; i < len(values); i++ {
-			val, err := Marshal(info.reqMeta.columns[i].TypeInfo, values[i])
+			val, err := Marshal(info.Args[i].TypeInfo, values[i])
 			if err != nil {
 				return &Iter{err: err}
 			}
@@ -622,7 +688,7 @@ func (c *Conn) executeQuery(qry *Query) *Iter {
 		}
 
 		frame = &writeExecuteFrame{
-			preparedID: info.preparedID,
+			preparedID: info.Id,
 			params:     params,
 		}
 	} else {
@@ -632,18 +698,28 @@ func (c *Conn) executeQuery(qry *Query) *Iter {
 		}
 	}
 
-	resp, err := c.exec(frame, qry.trace)
+	framer, err := c.exec(frame, qry.trace)
 	if err != nil {
 		return &Iter{err: err}
 	}
 
+	resp, err := framer.parseFrame()
+	if err != nil {
+		return &Iter{err: err}
+	}
+
+	if len(framer.traceID) > 0 {
+		qry.trace.Trace(framer.traceID)
+	}
+
 	switch x := resp.(type) {
 	case *resultVoidFrame:
-		return &Iter{}
+		return &Iter{framer: framer}
 	case *resultRowsFrame:
 		iter := &Iter{
-			meta: x.meta,
-			rows: x.rows,
+			meta:   x.meta,
+			rows:   x.rows,
+			framer: framer,
 		}
 
 		if len(x.meta.pagingState) > 0 && !qry.disableAutoPage {
@@ -659,8 +735,15 @@ func (c *Conn) executeQuery(qry *Query) *Iter {
 		}
 
 		return iter
-	case *resultKeyspaceFrame, *resultSchemaChangeFrame, *schemaChangeKeyspace, *schemaChangeTable:
-		return &Iter{}
+	case *resultKeyspaceFrame:
+		return &Iter{framer: framer}
+	case *resultSchemaChangeFrame, *schemaChangeKeyspace, *schemaChangeTable, *schemaChangeFunction:
+		iter := &Iter{framer: framer}
+		c.awaitSchemaAgreement()
+		// dont return an error from this, might be a good idea to give a warning
+		// though. The impact of this returning an error would be that the cluster
+		// is not consistent with regards to its schema.
+		return iter
 	case *RequestErrUnprepared:
 		stmtsLRU.Lock()
 		stmtCacheKey := c.addr + c.currentKeyspace + qry.stmt
@@ -670,11 +753,14 @@ func (c *Conn) executeQuery(qry *Query) *Iter {
 			return c.executeQuery(qry)
 		}
 		stmtsLRU.Unlock()
-		return &Iter{err: x}
+		return &Iter{err: x, framer: framer}
 	case error:
-		return &Iter{err: x}
+		return &Iter{err: x, framer: framer}
 	default:
-		return &Iter{err: NewErrProtocol("Unknown type in response to execute query (%T): %s", x, x)}
+		return &Iter{
+			err:    NewErrProtocol("Unknown type in response to execute query (%T): %s", x, x),
+			framer: framer,
+		}
 	}
 }
 
@@ -694,14 +780,19 @@ func (c *Conn) Address() string {
 }
 
 func (c *Conn) AvailableStreams() int {
-	return len(c.uniq)
+	return c.streams.Available()
 }
 
 func (c *Conn) UseKeyspace(keyspace string) error {
 	q := &writeQueryFrame{statement: `USE "` + keyspace + `"`}
 	q.params.consistency = Any
 
-	resp, err := c.exec(q, nil)
+	framer, err := c.exec(q, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := framer.parseFrame()
 	if err != nil {
 		return err
 	}
@@ -719,9 +810,9 @@ func (c *Conn) UseKeyspace(keyspace string) error {
 	return nil
 }
 
-func (c *Conn) executeBatch(batch *Batch) error {
+func (c *Conn) executeBatch(batch *Batch) (*Iter, error) {
 	if c.version == protoVersion1 {
-		return ErrUnsupported
+		return nil, ErrUnsupported
 	}
 
 	n := len(batch.Entries)
@@ -741,37 +832,32 @@ func (c *Conn) executeBatch(batch *Batch) error {
 		if len(entry.Args) > 0 || entry.binding != nil {
 			info, err := c.prepareStatement(entry.Stmt, nil)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			var args []interface{}
 			if entry.binding == nil {
 				args = entry.Args
 			} else {
-				binding := &QueryInfo{
-					Id:   info.preparedID,
-					Args: info.reqMeta.columns,
-					Rval: info.respMeta.columns,
-				}
-				args, err = entry.binding(binding)
+				args, err = entry.binding(info)
 				if err != nil {
-					return err
+					return nil, err
 				}
 			}
 
-			if len(args) != len(info.reqMeta.columns) {
-				return ErrQueryArgLength
+			if len(args) != len(info.Args) {
+				return nil, ErrQueryArgLength
 			}
 
-			b.preparedID = info.preparedID
-			stmts[string(info.preparedID)] = entry.Stmt
+			b.preparedID = info.Id
+			stmts[string(info.Id)] = entry.Stmt
 
-			b.values = make([]queryValues, len(info.reqMeta.columns))
+			b.values = make([]queryValues, len(info.Args))
 
-			for j := 0; j < len(info.reqMeta.columns); j++ {
-				val, err := Marshal(info.reqMeta.columns[j].TypeInfo, args[j])
+			for j := 0; j < len(info.Args); j++ {
+				val, err := Marshal(info.Args[j].TypeInfo, args[j])
 				if err != nil {
-					return err
+					return nil, err
 				}
 
 				b.values[j].value = val
@@ -783,14 +869,20 @@ func (c *Conn) executeBatch(batch *Batch) error {
 	}
 
 	// TODO: should batch support tracing?
-	resp, err := c.exec(req, nil)
+	framer, err := c.exec(req, nil)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	resp, err := framer.parseFrame()
+	if err != nil {
+		return nil, err
 	}
 
 	switch x := resp.(type) {
 	case *resultVoidFrame:
-		return nil
+		framerPool.Put(framer)
+		return nil, nil
 	case *RequestErrUnprepared:
 		stmt, found := stmts[string(x.StatementId)]
 		if found {
@@ -798,15 +890,28 @@ func (c *Conn) executeBatch(batch *Batch) error {
 			stmtsLRU.lru.Remove(c.addr + c.currentKeyspace + stmt)
 			stmtsLRU.Unlock()
 		}
+
+		framerPool.Put(framer)
+
 		if found {
 			return c.executeBatch(batch)
 		} else {
-			return x
+			return nil, x
 		}
+	case *resultRowsFrame:
+		iter := &Iter{
+			meta:   x.meta,
+			rows:   x.rows,
+			framer: framer,
+		}
+
+		return iter, nil
 	case error:
-		return x
+		framerPool.Put(framer)
+		return nil, x
 	default:
-		return NewErrProtocol("Unknown type in response to batch statement: %s", x)
+		framerPool.Put(framer)
+		return nil, NewErrProtocol("Unknown type in response to batch statement: %s", x)
 	}
 }
 
@@ -823,8 +928,61 @@ func (c *Conn) setKeepalive(d time.Duration) error {
 	return nil
 }
 
+func (c *Conn) query(statement string, values ...interface{}) (iter *Iter) {
+	q := c.session.Query(statement, values...).Consistency(One)
+	return c.executeQuery(q)
+}
+
+func (c *Conn) awaitSchemaAgreement() (err error) {
+	const (
+		peerSchemas  = "SELECT schema_version FROM system.peers"
+		localSchemas = "SELECT schema_version FROM system.local WHERE key='local'"
+	)
+
+	endDeadline := time.Now().Add(c.session.cfg.MaxWaitSchemaAgreement)
+	for time.Now().Before(endDeadline) {
+		iter := c.query(peerSchemas)
+
+		versions := make(map[string]struct{})
+
+		var schemaVersion string
+		for iter.Scan(&schemaVersion) {
+			versions[schemaVersion] = struct{}{}
+			schemaVersion = ""
+		}
+
+		if err = iter.Close(); err != nil {
+			goto cont
+		}
+
+		iter = c.query(localSchemas)
+		for iter.Scan(&schemaVersion) {
+			versions[schemaVersion] = struct{}{}
+			schemaVersion = ""
+		}
+
+		if err = iter.Close(); err != nil {
+			goto cont
+		}
+
+		if len(versions) <= 1 {
+			return nil
+		}
+
+	cont:
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if err != nil {
+		return
+	}
+
+	// not exported
+	return errors.New("gocql: cluster schema versions not consistent")
+}
+
 type inflightPrepare struct {
-	info *resultPreparedFrame
+	info QueryInfo
 	err  error
 	wg   sync.WaitGroup
 }
@@ -834,4 +992,5 @@ var (
 	ErrTimeoutNoResponse = errors.New("gocql: no response received from cassandra within timeout period")
 	ErrTooManyTimeouts   = errors.New("gocql: too many query timeouts on the connection")
 	ErrConnectionClosed  = errors.New("gocql: connection closed waiting for response")
+	ErrNoStreams         = errors.New("gocql: no streams available on connection")
 )

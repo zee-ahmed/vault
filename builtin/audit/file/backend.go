@@ -43,7 +43,7 @@ func Factory(conf *audit.BackendConfig) (audit.Backend, error) {
 	// otherwise it will be too late to catch later without problems
 	// (ref: https://github.com/hashicorp/vault/issues/550)
 	if err := b.open(); err != nil {
-		return nil, fmt.Errorf("sanity check failed; unable to open given path for writing")
+		return nil, fmt.Errorf("sanity check failed; unable to open %s for writing", path)
 	}
 
 	return b, nil
@@ -61,6 +61,10 @@ type Backend struct {
 
 	once sync.Once
 	f    *os.File
+}
+
+func (b *Backend) GetHash(data string) string {
+	return audit.HashString(b.salt, data)
 }
 
 func (b *Backend) LogRequest(auth *logical.Auth, req *logical.Request, outerErr error) error {

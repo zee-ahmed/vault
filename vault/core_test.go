@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/uuid"
 	"github.com/hashicorp/vault/audit"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/physical"
@@ -820,7 +821,7 @@ func TestCore_HandleLogin_Token(t *testing.T) {
 	expect := &TokenEntry{
 		ID:       clientToken,
 		Parent:   "",
-		Policies: []string{"foo", "bar"},
+		Policies: []string{"foo", "bar", "default"},
 		Path:     "auth/foo/login",
 		Meta: map[string]string{
 			"user": "armon",
@@ -1019,7 +1020,7 @@ func TestCore_HandleRequest_CreateToken_Lease(t *testing.T) {
 	expect := &TokenEntry{
 		ID:           clientToken,
 		Parent:       root,
-		Policies:     []string{"foo"},
+		Policies:     []string{"foo", "default"},
 		Path:         "auth/token/create",
 		DisplayName:  "token",
 		CreationTime: te.CreationTime,
@@ -1032,6 +1033,45 @@ func TestCore_HandleRequest_CreateToken_Lease(t *testing.T) {
 	// Check that we have a lease with default duration
 	if resp.Auth.TTL != c.defaultLeaseTTL {
 		t.Fatalf("bad: %#v", resp.Auth)
+	}
+}
+
+// Check that we handle excluding the default policy
+func TestCore_HandleRequest_CreateToken_NoDefaultPolicy(t *testing.T) {
+	c, _, root := TestCoreUnsealed(t)
+
+	// Create a new credential
+	req := logical.TestRequest(t, logical.WriteOperation, "auth/token/create")
+	req.ClientToken = root
+	req.Data["policies"] = []string{"foo"}
+	req.Data["no_default_policy"] = true
+	resp, err := c.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Ensure we got a new client token back
+	clientToken := resp.Auth.ClientToken
+	if clientToken == "" {
+		t.Fatalf("bad: %#v", resp)
+	}
+
+	// Check the policy and metadata
+	te, err := c.tokenStore.Lookup(clientToken)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	expect := &TokenEntry{
+		ID:           clientToken,
+		Parent:       root,
+		Policies:     []string{"foo"},
+		Path:         "auth/token/create",
+		DisplayName:  "token",
+		CreationTime: te.CreationTime,
+		TTL:          time.Hour * 24 * 30,
+	}
+	if !reflect.DeepEqual(te, expect) {
+		t.Fatalf("Bad: %#v expect: %#v", te, expect)
 	}
 }
 
@@ -1065,6 +1105,152 @@ func TestCore_LimitedUseToken(t *testing.T) {
 	_, err = c.HandleRequest(req)
 	if err != logical.ErrPermissionDenied {
 		t.Fatalf("err: %v", err)
+	}
+}
+
+func TestCore_CleanLeaderPrefix(t *testing.T) {
+	// Create the first core and initialize it
+	inm := physical.NewInmemHA()
+	advertiseOriginal := "http://127.0.0.1:8200"
+	core, err := NewCore(&CoreConfig{
+		Physical:      inm,
+		AdvertiseAddr: advertiseOriginal,
+		DisableMlock:  true,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	key, root := TestCoreInit(t, core)
+	if _, err := core.Unseal(TestKeyCopy(key)); err != nil {
+		t.Fatalf("unseal err: %s", err)
+	}
+
+	// Verify unsealed
+	sealed, err := core.Sealed()
+	if err != nil {
+		t.Fatalf("err checking seal status: %s", err)
+	}
+	if sealed {
+		t.Fatal("should not be sealed")
+	}
+
+	// Wait for core to become active
+	testWaitActive(t, core)
+
+	// Ensure that the original clean function has stopped running
+	time.Sleep(2 * time.Second)
+
+	// Put several random entries
+	for i := 0; i < 5; i++ {
+		core.barrier.Put(&Entry{
+			Key:   coreLeaderPrefix + uuid.GenerateUUID(),
+			Value: []byte(uuid.GenerateUUID()),
+		})
+	}
+
+	entries, err := core.barrier.List(coreLeaderPrefix)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(entries) != 6 {
+		t.Fatalf("wrong number of core leader prefix entries, got %d", len(entries))
+	}
+
+	// Check the leader is local
+	isLeader, advertise, err := core.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !isLeader {
+		t.Fatalf("should be leader")
+	}
+	if advertise != advertiseOriginal {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Create a second core, attached to same in-memory store
+	advertiseOriginal2 := "http://127.0.0.1:8500"
+	core2, err := NewCore(&CoreConfig{
+		Physical:      inm,
+		AdvertiseAddr: advertiseOriginal2,
+		DisableMlock:  true,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if _, err := core2.Unseal(TestKeyCopy(key)); err != nil {
+		t.Fatalf("unseal err: %s", err)
+	}
+
+	// Verify unsealed
+	sealed, err = core2.Sealed()
+	if err != nil {
+		t.Fatalf("err checking seal status: %s", err)
+	}
+	if sealed {
+		t.Fatal("should not be sealed")
+	}
+
+	// Core2 should be in standby
+	standby, err := core2.Standby()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !standby {
+		t.Fatalf("should be standby")
+	}
+
+	// Check the leader is not local
+	isLeader, advertise, err = core2.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if isLeader {
+		t.Fatalf("should not be leader")
+	}
+	if advertise != advertiseOriginal {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Seal the first core, should step down
+	err = core.Seal(root)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Core should be in standby
+	standby, err = core.Standby()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !standby {
+		t.Fatalf("should be standby")
+	}
+
+	// Wait for core2 to become active
+	testWaitActive(t, core2)
+
+	// Check the leader is local
+	isLeader, advertise, err = core2.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !isLeader {
+		t.Fatalf("should be leader")
+	}
+	if advertise != advertiseOriginal2 {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Give time for the entries to clear out; it is conservative at 1/second
+	time.Sleep(10 * leaderPrefixCleanDelay)
+
+	entries, err = core2.barrier.List(coreLeaderPrefix)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("wrong number of core leader prefix entries, got %d", len(entries))
 	}
 }
 

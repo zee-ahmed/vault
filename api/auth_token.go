@@ -25,8 +25,37 @@ func (c *TokenAuth) Create(opts *TokenCreateRequest) (*Secret, error) {
 	return ParseSecret(resp.Body)
 }
 
+func (c *TokenAuth) LookupSelf() (*Secret, error) {
+	r := c.c.NewRequest("POST", "/v1/auth/token/lookup-self")
+
+	resp, err := c.c.RawRequest(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return ParseSecret(resp.Body)
+}
+
 func (c *TokenAuth) Renew(token string, increment int) (*Secret, error) {
 	r := c.c.NewRequest("PUT", "/v1/auth/token/renew/"+token)
+
+	body := map[string]interface{}{"increment": increment}
+	if err := r.SetJSONBody(body); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.c.RawRequest(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return ParseSecret(resp.Body)
+}
+
+func (c *TokenAuth) RenewSelf(increment int) (*Secret, error) {
+	r := c.c.NewRequest("PUT", "/v1/auth/token/renew-self")
 
 	body := map[string]interface{}{"increment": increment}
 	if err := r.SetJSONBody(body); err != nil {
@@ -64,6 +93,17 @@ func (c *TokenAuth) RevokePrefix(token string) error {
 	return nil
 }
 
+func (c *TokenAuth) RevokeSelf() error {
+	r := c.c.NewRequest("PUT", "/v1/auth/token/revoke-self")
+	resp, err := c.c.RawRequest(r)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
 func (c *TokenAuth) RevokeTree(token string) error {
 	r := c.c.NewRequest("PUT", "/v1/auth/token/revoke/"+token)
 	resp, err := c.c.RawRequest(r)
@@ -77,11 +117,13 @@ func (c *TokenAuth) RevokeTree(token string) error {
 
 // TokenCreateRequest is the options structure for creating a token.
 type TokenCreateRequest struct {
-	ID          string            `json:"id,omitempty"`
-	Policies    []string          `json:"policies,omitempty"`
-	Metadata    map[string]string `json:"meta,omitempty"`
-	Lease       string            `json:"lease,omitempty"`
-	NoParent    bool              `json:"no_parent,omitempty"`
-	DisplayName string            `json:"display_name"`
-	NumUses     int               `json:"num_uses"`
+	ID              string            `json:"id,omitempty"`
+	Policies        []string          `json:"policies,omitempty"`
+	Metadata        map[string]string `json:"meta,omitempty"`
+	Lease           string            `json:"lease,omitempty"`
+	TTL             string            `json:"ttl,omitempty"`
+	NoParent        bool              `json:"no_parent,omitempty"`
+	NoDefaultPolicy bool              `json:"no_default_policy,omitempty"`
+	DisplayName     string            `json:"display_name"`
+	NumUses         int               `json:"num_uses"`
 }

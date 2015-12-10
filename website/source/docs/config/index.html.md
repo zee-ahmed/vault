@@ -42,6 +42,10 @@ to specify where the configuration is.
   "tcp" is currently the only option available. A full reference for the
    inner syntax is below.
 
+* `disable_cache` (optional) - A boolean. If true, this will disable the
+  read cache used by the physical storage subsystem. This will very
+  significantly impact performance.
+
 * `disable_mlock` (optional) - A boolean. If true, this will disable the
   server from executing the `mlock` syscall to prevent memory from being
   swapped to disk. This is not recommended in production (see below).
@@ -116,10 +120,10 @@ For Consul, the following options are supported:
 
   * `scheme` (optional) - "http" or "https" for talking to Consul.
 
-  * `datacenter` (optional) - The datacenter within Consul to write to.
-      This defaults to the local datacenter.
-
   * `token` (optional) - An access token to use to write data to Consul.
+
+  * `max_parallel` (optional) - The maximum number of connections to Consul;
+      defaults to "128".
 
   * `tls_skip_verify` (optional) - If non-empty, then TLS host verification
       will be disabled for Consul communication.
@@ -157,21 +161,23 @@ For etcd, the following options are supported:
 
   * `address` (optional) - The address(es) of the etcd instance(s) to talk to.
       Can be comma separated list (protocol://host:port) of many etcd instances.
-      Defaults to "http://localhost:4001" if not specified.
+      Defaults to "http://localhost:2379" if not specified.
 
 #### Backend Reference: S3
 
 For S3, the following options are supported:
 
-  * `bucket` (required) - The name of the S3 bucket to use.
+  * `bucket` (required) - The name of the S3 bucket to use. It must be provided, but it can also be sourced from the `AWS_S3_BUCKET` environment variable.
 
-  * `access_key` - (required) The AWS access key. It must be provided, but it can also be sourced from the AWS_ACCESS_KEY_ID environment variable.
+  * `access_key` - (required) The AWS access key. It must be provided, but it can also be sourced from the `AWS_ACCESS_KEY_ID` environment variable.
 
-  * `secret_key` - (required) The AWS secret key. It must be provided, but it can also be sourced from the AWS_SECRET_ACCESS_KEY environment variable.
+  * `secret_key` - (required) The AWS secret key. It must be provided, but it can also be sourced from the `AWS_SECRET_ACCESS_KEY` environment variable.
 
-  * `session_token` - (optional) The AWS session_token. It can also be sourced from the AWS_SESSION_TOKEN environment variable.
+  * `session_token` - (optional) The AWS session token. It can also be sourced from the `AWS_SESSION_TOKEN` environment variable.
 
-  * `region` (optional) - The AWS region. It can be sourced from the AWS_DEFAULT_REGION environment variable and will default to "us-east-1" if not specified.
+  * `endpoint` - (optional) An alternative (AWS compatible) S3 endpoint to use. It can also be sourced from the `AWS_S3_ENDPOINT` environment variable.  
+
+  * `region` (optional) - The AWS region. It can be sourced from the `AWS_DEFAULT_REGION` environment variable and will default to "us-east-1" if not specified.
 
 If you are running your Vault server on an EC2 instance, you can also make use
 of the EC2 instance profile service to provide the credentials Vault will use to

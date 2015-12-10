@@ -29,12 +29,9 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 
 		PathsSpecial: &logical.Paths{
 			Root: []string{
-				"mounts/*",
 				"auth/*",
 				"remount",
 				"revoke-prefix/*",
-				"policy",
-				"policy/*",
 				"audit",
 				"audit/*",
 				"seal", // Must be set for Core.Seal() logic
@@ -63,8 +60,8 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 				},
 
 				Callbacks: map[logical.Operation]framework.OperationFunc{
-					logical.ReadOperation:  b.handleMountConfig,
-					logical.WriteOperation: b.handleMountTune,
+					logical.ReadOperation:  b.handleMountTuneRead,
+					logical.WriteOperation: b.handleMountTuneWrite,
 				},
 
 				HelpSynopsis:    strings.TrimSpace(sysHelp["mount_tune"][0]),
@@ -267,6 +264,28 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 			},
 
 			&framework.Path{
+				Pattern: "audit-hash/(?P<path>.+)",
+
+				Fields: map[string]*framework.FieldSchema{
+					"path": &framework.FieldSchema{
+						Type:        framework.TypeString,
+						Description: strings.TrimSpace(sysHelp["audit_path"][0]),
+					},
+
+					"input": &framework.FieldSchema{
+						Type: framework.TypeString,
+					},
+				},
+
+				Callbacks: map[logical.Operation]framework.OperationFunc{
+					logical.WriteOperation: b.handleAuditHash,
+				},
+
+				HelpSynopsis:    strings.TrimSpace(sysHelp["audit-hash"][0]),
+				HelpDescription: strings.TrimSpace(sysHelp["audit-hash"][1]),
+			},
+
+			&framework.Path{
 				Pattern: "audit$",
 
 				Callbacks: map[logical.Operation]framework.OperationFunc{
@@ -367,12 +386,13 @@ type SystemBackend struct {
 // handleMountTable handles the "mounts" endpoint to provide the mount table
 func (b *SystemBackend) handleMountTable(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.Core.mounts.Lock()
-	defer b.Core.mounts.Unlock()
+	b.Core.mountsLock.RLock()
+	defer b.Core.mountsLock.RUnlock()
 
 	resp := &logical.Response{
 		Data: make(map[string]interface{}),
 	}
+
 	for _, entry := range b.Core.mounts.Entries {
 		info := map[string]interface{}{
 			"type":        entry.Type,
@@ -523,8 +543,8 @@ func (b *SystemBackend) handleRemount(
 	return nil, nil
 }
 
-// handleMountConfig is used to get config settings on a backend
-func (b *SystemBackend) handleMountConfig(
+// handleMountTuneRead is used to get config settings on a backend
+func (b *SystemBackend) handleMountTuneRead(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	path := data.Get("path").(string)
 	if path == "" {
@@ -554,8 +574,8 @@ func (b *SystemBackend) handleMountConfig(
 	return resp, nil
 }
 
-// handleMountTune is used to set config settings on a backend
-func (b *SystemBackend) handleMountTune(
+// handleMountTuneWrite is used to set config settings on a backend
+func (b *SystemBackend) handleMountTuneWrite(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	path := data.Get("path").(string)
 	if path == "" {
@@ -616,6 +636,8 @@ func (b *SystemBackend) handleMountTune(
 		}
 
 		if newDefault != nil || newMax != nil {
+			b.Core.mountsLock.Lock()
+			defer b.Core.mountsLock.Unlock()
 			if err := b.tuneMountTTLs(path, &mountEntry.Config, newDefault, newMax); err != nil {
 				b.Backend.Logger().Printf("[ERR] sys: tune of path '%s' failed: %v", path, err)
 				return handleError(err)
@@ -676,8 +698,8 @@ func (b *SystemBackend) handleRevokePrefix(
 // handleAuthTable handles the "auth" endpoint to provide the auth table
 func (b *SystemBackend) handleAuthTable(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.Core.auth.Lock()
-	defer b.Core.auth.Unlock()
+	b.Core.authLock.RLock()
+	defer b.Core.authLock.RUnlock()
 
 	resp := &logical.Response{
 		Data: make(map[string]interface{}),
@@ -741,7 +763,7 @@ func (b *SystemBackend) handleDisableAuth(
 func (b *SystemBackend) handlePolicyList(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	// Get all the configured policies
-	policies, err := b.Core.policy.ListPolicies()
+	policies, err := b.Core.policyStore.ListPolicies()
 
 	// Add the special "root" policy
 	policies = append(policies, "root")
@@ -753,7 +775,7 @@ func (b *SystemBackend) handlePolicyRead(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	name := data.Get("name").(string)
 
-	policy, err := b.Core.policy.GetPolicy(name)
+	policy, err := b.Core.policyStore.GetPolicy(name)
 	if err != nil {
 		return handleError(err)
 	}
@@ -783,10 +805,10 @@ func (b *SystemBackend) handlePolicySet(
 	}
 
 	// Override the name
-	parse.Name = name
+	parse.Name = strings.ToLower(name)
 
 	// Update the policy
-	if err := b.Core.policy.SetPolicy(parse); err != nil {
+	if err := b.Core.policyStore.SetPolicy(parse); err != nil {
 		return handleError(err)
 	}
 	return nil, nil
@@ -796,7 +818,7 @@ func (b *SystemBackend) handlePolicySet(
 func (b *SystemBackend) handlePolicyDelete(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	name := data.Get("name").(string)
-	if err := b.Core.policy.DeletePolicy(name); err != nil {
+	if err := b.Core.policyStore.DeletePolicy(name); err != nil {
 		return handleError(err)
 	}
 	return nil, nil
@@ -805,8 +827,8 @@ func (b *SystemBackend) handlePolicyDelete(
 // handleAuditTable handles the "audit" endpoint to provide the audit table
 func (b *SystemBackend) handleAuditTable(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.Core.audit.Lock()
-	defer b.Core.audit.Unlock()
+	b.Core.auditLock.RLock()
+	defer b.Core.auditLock.RUnlock()
 
 	resp := &logical.Response{
 		Data: make(map[string]interface{}),
@@ -820,6 +842,32 @@ func (b *SystemBackend) handleAuditTable(
 		resp.Data[entry.Path] = info
 	}
 	return resp, nil
+}
+
+// handleAuditHash is used to fetch the hash of the given input data with the
+// specified audit backend's salt
+func (b *SystemBackend) handleAuditHash(
+	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	path := data.Get("path").(string)
+	input := data.Get("input").(string)
+	if input == "" {
+		return logical.ErrorResponse("the \"input\" parameter is empty"), nil
+	}
+
+	if !strings.HasSuffix(path, "/") {
+		path += "/"
+	}
+
+	hash, err := b.Core.auditBroker.GetHash(path, input)
+	if err != nil {
+		return logical.ErrorResponse(err.Error()), nil
+	}
+
+	return &logical.Response{
+		Data: map[string]interface{}{
+			"hash": hash,
+		},
+	}, nil
 }
 
 // handleEnableAudit is used to enable a new audit backend
@@ -1164,6 +1212,11 @@ or delete a policy.
 
 	"policy-rules": {
 		`The rules of the policy. Either given in HCL or JSON format.`,
+		"",
+	},
+
+	"audit-hash": {
+		"The hash of the given string via the given audit backend",
 		"",
 	},
 

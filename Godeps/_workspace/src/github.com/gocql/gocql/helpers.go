@@ -106,6 +106,15 @@ func getApacheCassandraType(class string) Type {
 	}
 }
 
+func typeCanBeNull(typ TypeInfo) bool {
+	switch typ.(type) {
+	case CollectionType, UDTTypeInfo, TupleTypeInfo:
+		return false
+	}
+
+	return true
+}
+
 func (r *RowData) rowMap(m map[string]interface{}) {
 	for i, column := range r.Columns {
 		val := dereference(r.Values[i])
@@ -179,4 +188,10 @@ func (iter *Iter) MapScan(m map[string]interface{}) bool {
 		return true
 	}
 	return false
+}
+
+func copyBytes(p []byte) []byte {
+	b := make([]byte, len(p))
+	copy(b, p)
+	return b
 }

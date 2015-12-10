@@ -11,16 +11,23 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/vault/logical"
 	logicaltest "github.com/hashicorp/vault/logical/testing"
 	"github.com/mitchellh/mapstructure"
 )
 
+func getBackend(t *testing.T) logical.Backend {
+	be, _ := Factory(logical.TestBackendConfig())
+	return be
+}
+
 func TestBackend_basic(t *testing.T) {
 	logicaltest.Test(t, logicaltest.TestCase{
 		PreCheck: func() { testAccPreCheck(t) },
-		Backend:  Backend(),
+		Backend:  getBackend(t),
 		Steps: []logicaltest.TestStep{
 			testAccStepConfig(t),
 			testAccStepWritePolicy(t, "test", testPolicy),
@@ -36,7 +43,7 @@ func TestBackend_policyCrud(t *testing.T) {
 	}
 
 	logicaltest.Test(t, logicaltest.TestCase{
-		Backend: Backend(),
+		Backend: getBackend(t),
 		Steps: []logicaltest.TestStep{
 			testAccStepConfig(t),
 			testAccStepWritePolicy(t, "test", testPolicy),
@@ -97,8 +104,9 @@ func testAccStepReadUser(t *testing.T, name string) logicaltest.TestStep {
 			awsConfig := &aws.Config{
 				Credentials: creds,
 				Region:      aws.String("us-east-1"),
+				HTTPClient:  cleanhttp.DefaultClient(),
 			}
-			client := ec2.New(awsConfig)
+			client := ec2.New(session.New(awsConfig))
 
 			log.Printf("[WARN] Verifying that the generated credentials work...")
 			_, err := client.DescribeInstances(&ec2.DescribeInstancesInput{})

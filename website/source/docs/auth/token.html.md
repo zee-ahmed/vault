@@ -40,21 +40,24 @@ of the header should be "X-Vault-Token" and the value should be the token.
 
 ## API
 
-### /auth/token/create
+### /auth/token/create[-orphan]
 #### POST
 
 <dl class="api">
   <dt>Description</dt>
   <dd>
     Creates a new token. Certain options are only available to
-    when called by a root token.
+    when called by a root token. If used via the
+	`/auth/token/create-orphan` endpoint, a root token is not
+	required to create an orphan token (otherwise set with the
+	`no_parent` option).
   </dd>
 
   <dt>Method</dt>
   <dd>POST</dd>
 
   <dt>URL</dt>
-  <dd>`/auth/token/create`</dd>
+  <dd>`/auth/token/create[-orphan]`</dd>
 
   <dt>Parameters</dt>
   <dd>
@@ -83,6 +86,12 @@ of the header should be "X-Vault-Token" and the value should be the token.
         <span class="param-flags">optional</span>
         If true and set by a root caller, the token will not have the
         parent token of the caller. This creates a token with no parent.
+      </li>
+      <li>
+        <span class="param">no_default_profile</span>
+        <span class="param-flags">optional</span>
+        If true the `default` profile will not be a part of this token's
+        policy set.
       </li>
       <li>
         <span class="param">lease</span>
@@ -311,6 +320,52 @@ of the header should be "X-Vault-Token" and the value should be the token.
   </dd>
 </dl>
 
+### /auth/token/renew-self
+#### POST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+	Renews a lease associated with the callign token. This is used to prevent
+	the expiration of a token, and the automatic revocation of it. Token
+	renewal is possible only if there is a lease associated with it.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>POST</dd>
+
+  <dt>URL</dt>
+  <dd>`/auth/token/renew-self`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+    <ul>
+      <li>
+        <span class="param">increment</span>
+        <span class="param-flags">optional</span>
+            An optional requested lease increment can be provided. This
+            increment may be ignored.
+      </li>
+    </ul>
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+
+    ```javascript
+    {
+      "auth": {
+        "client_token": "ABCD",
+        "policies": ["web", "stage"],
+        "metadata": {"user": "armon"},
+        "lease_duration": 3600,
+        "renewable": true,
+      }
+    }
+    ```
+  </dd>
+</dl>
+
 ### /auth/token/renew/
 #### POST
 
@@ -356,4 +411,4 @@ of the header should be "X-Vault-Token" and the value should be the token.
     ```
   </dd>
 </dl>
-</div>
+

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/armon/go-metrics"
+	"github.com/hashicorp/uuid"
 	"github.com/hashicorp/vault/helper/salt"
-	"github.com/hashicorp/vault/helper/uuid"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 	"github.com/mitchellh/mapstructure"
@@ -46,6 +46,8 @@ type TokenStore struct {
 	expiration *ExpirationManager
 
 	cubbyholeBackend *CubbyholeBackend
+
+	policyLookupFunc func(string) (*Policy, error)
 }
 
 // NewTokenStore is used to construct a token store that is
@@ -57,6 +59,10 @@ func NewTokenStore(c *Core, config *logical.BackendConfig) (*TokenStore, error) 
 	// Initialize the store
 	t := &TokenStore{
 		view: view,
+	}
+
+	if c.policyStore != nil {
+		t.policyLookupFunc = c.policyStore.GetPolicy
 	}
 
 	// Setup the salt
@@ -83,6 +89,17 @@ func NewTokenStore(c *Core, config *logical.BackendConfig) (*TokenStore, error) 
 		},
 
 		Paths: []*framework.Path{
+			&framework.Path{
+				Pattern: "create-orphan$",
+
+				Callbacks: map[logical.Operation]framework.OperationFunc{
+					logical.WriteOperation: t.handleCreateOrphan,
+				},
+
+				HelpSynopsis:    strings.TrimSpace(tokenCreateOrphanHelp),
+				HelpDescription: strings.TrimSpace(tokenCreateOrphanHelp),
+			},
+
 			&framework.Path{
 				Pattern: "create$",
 
@@ -131,7 +148,7 @@ func NewTokenStore(c *Core, config *logical.BackendConfig) (*TokenStore, error) 
 			},
 
 			&framework.Path{
-				Pattern: "revoke-self",
+				Pattern: "revoke-self$",
 
 				Callbacks: map[logical.Operation]framework.OperationFunc{
 					logical.WriteOperation: t.handleRevokeSelf,
@@ -196,6 +213,28 @@ func NewTokenStore(c *Core, config *logical.BackendConfig) (*TokenStore, error) 
 			},
 
 			&framework.Path{
+				Pattern: "renew-self$",
+
+				Fields: map[string]*framework.FieldSchema{
+					"token": &framework.FieldSchema{
+						Type:        framework.TypeString,
+						Description: "Token to renew",
+					},
+					"increment": &framework.FieldSchema{
+						Type:        framework.TypeDurationSecond,
+						Description: "The desired increment in seconds to the token expiration",
+					},
+				},
+
+				Callbacks: map[logical.Operation]framework.OperationFunc{
+					logical.WriteOperation: t.handleRenewSelf,
+				},
+
+				HelpSynopsis:    strings.TrimSpace(tokenRenewSelfHelp),
+				HelpDescription: strings.TrimSpace(tokenRenewSelfHelp),
+			},
+
+			&framework.Path{
 				Pattern: "renew/(?P<token>.+)",
 
 				Fields: map[string]*framework.FieldSchema{
@@ -250,14 +289,14 @@ func (ts *TokenStore) SaltID(id string) string {
 }
 
 // RootToken is used to generate a new token with root privileges and no parent
-func (ts *TokenStore) RootToken() (*TokenEntry, error) {
+func (ts *TokenStore) rootToken() (*TokenEntry, error) {
 	te := &TokenEntry{
 		Policies:     []string{"root"},
 		Path:         "auth/token/root",
 		DisplayName:  "root",
 		CreationTime: time.Now().Unix(),
 	}
-	if err := ts.Create(te); err != nil {
+	if err := ts.create(te); err != nil {
 		return nil, err
 	}
 	return te, nil
@@ -265,7 +304,7 @@ func (ts *TokenStore) RootToken() (*TokenEntry, error) {
 
 // Create is used to create a new token entry. The entry is assigned
 // a newly generated ID if not provided.
-func (ts *TokenStore) Create(entry *TokenEntry) error {
+func (ts *TokenStore) create(entry *TokenEntry) error {
 	defer metrics.MeasureSince([]string{"token", "create"}, time.Now())
 	// Generate an ID if necessary
 	if entry.ID == "" {
@@ -473,9 +512,23 @@ func (ts *TokenStore) revokeTreeSalted(saltedId string) error {
 	return nil
 }
 
-// handleCreate handles the auth/token/create path for creation of new tokens
+// handleCreate handles the auth/token/create path for creation of new orphan
+// tokens
+func (ts *TokenStore) handleCreateOrphan(
+	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	return ts.handleCreateCommon(req, d, true)
+}
+
+// handleCreate handles the auth/token/create path for creation of new non-orphan
+// tokens
 func (ts *TokenStore) handleCreate(
 	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	return ts.handleCreateCommon(req, d, false)
+}
+
+// handleCreateCommon handles the auth/token/create path for creation of new tokens
+func (ts *TokenStore) handleCreateCommon(
+	req *logical.Request, d *framework.FieldData, orphan bool) (*logical.Response, error) {
 	// Read the parent policy
 	parent, err := ts.Lookup(req.ClientToken)
 	if err != nil || parent == nil {
@@ -494,14 +547,15 @@ func (ts *TokenStore) handleCreate(
 
 	// Read and parse the fields
 	var data struct {
-		ID          string
-		Policies    []string
-		Metadata    map[string]string `mapstructure:"meta"`
-		NoParent    bool              `mapstructure:"no_parent"`
-		Lease       string
-		TTL         string
-		DisplayName string `mapstructure:"display_name"`
-		NumUses     int    `mapstructure:"num_uses"`
+		ID              string
+		Policies        []string
+		Metadata        map[string]string `mapstructure:"meta"`
+		NoParent        bool              `mapstructure:"no_parent"`
+		NoDefaultPolicy bool              `mapstructure:"no_default_policy"`
+		Lease           string
+		TTL             string
+		DisplayName     string `mapstructure:"display_name"`
+		NumUses         int    `mapstructure:"num_uses"`
 	}
 	if err := mapstructure.WeakDecode(req.Data, &data); err != nil {
 		return logical.ErrorResponse(fmt.Sprintf(
@@ -549,6 +603,9 @@ func (ts *TokenStore) handleCreate(
 		return logical.ErrorResponse("child policies must be subset of parent"), logical.ErrInvalidRequest
 	}
 	te.Policies = data.Policies
+	if !strListSubset(te.Policies, []string{"root"}) && !data.NoDefaultPolicy {
+		te.Policies = append(te.Policies, "default")
+	}
 
 	// Only allow an orphan token if the client has sudo policy
 	if data.NoParent {
@@ -558,6 +615,11 @@ func (ts *TokenStore) handleCreate(
 		}
 
 		te.Parent = ""
+	} else {
+		// This comes from create-orphan, which can be properly ACLd
+		if orphan {
+			te.Parent = ""
+		}
 	}
 
 	// Parse the TTL/lease if any
@@ -594,7 +656,7 @@ func (ts *TokenStore) handleCreate(
 	}
 
 	// Create the token
-	if err := ts.Create(&te); err != nil {
+	if err := ts.create(&te); err != nil {
 		return logical.ErrorResponse(err.Error()), logical.ErrInvalidRequest
 	}
 
@@ -612,6 +674,18 @@ func (ts *TokenStore) handleCreate(
 			},
 			ClientToken: te.ID,
 		},
+	}
+
+	if ts.policyLookupFunc != nil {
+		for _, p := range te.Policies {
+			policy, err := ts.policyLookupFunc(p)
+			if err != nil {
+				return logical.ErrorResponse(fmt.Sprintf("could not look up policy %s", p)), nil
+			}
+			if policy == nil {
+				resp.AddWarning(fmt.Sprintf("policy \"%s\" does not exist", p))
+			}
+		}
 	}
 
 	return resp, nil
@@ -730,11 +804,23 @@ func (ts *TokenStore) handleLookup(
 			"meta":          out.Meta,
 			"display_name":  out.DisplayName,
 			"num_uses":      out.NumUses,
+			"orphan":        false,
 			"creation_time": int(out.CreationTime),
 			"ttl":           int(out.TTL.Seconds()),
 		},
 	}
+
+	if out.Parent == "" {
+		resp.Data["orphan"] = true
+	}
+
 	return resp, nil
+}
+
+func (ts *TokenStore) handleRenewSelf(
+	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	data.Raw["token"] = req.ClientToken
+	return ts.handleRenew(req, data)
 }
 
 // handleRenew handles the auth/token/renew/id path for renewal of tokens.
@@ -761,7 +847,7 @@ func (ts *TokenStore) handleRenew(
 		return logical.ErrorResponse("token not found"), logical.ErrInvalidRequest
 	}
 
-	// Revoke the token and its children
+	// Renew the token and its children
 	auth, err := ts.expiration.RenewToken(out.Path, out.ID, increment)
 	if err != nil {
 		return logical.ErrorResponse(err.Error()), logical.ErrInvalidRequest
@@ -788,10 +874,12 @@ Client tokens are used to identify a client and to allow Vault to associate poli
 which are enforced on every request. This backend also allows for generating sub-tokens as well
 as revocation of tokens. The tokens are renewable if associated with a lease.`
 	tokenCreateHelp       = `The token create path is used to create new tokens.`
+	tokenCreateOrphanHelp = `The token create path is used to create new orphan tokens.`
 	tokenLookupHelp       = `This endpoint will lookup a token and its properties.`
 	tokenRevokeHelp       = `This endpoint will delete the given token and all of its child tokens.`
 	tokenRevokeSelfHelp   = `This endpoint will delete the token used to call it and all of its child tokens.`
 	tokenRevokeOrphanHelp = `This endpoint will delete the token and orphan its child tokens.`
 	tokenRevokePrefixHelp = `This endpoint will delete all tokens generated under a prefix with their child tokens.`
-	tokenRenewHelp        = `This endpoint will renew the token and prevent expiration.`
+	tokenRenewHelp        = `This endpoint will renew the given token and prevent expiration.`
+	tokenRenewSelfHelp    = `This endpoint will renew the token used to call it and prevent expiration.`
 )

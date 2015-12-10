@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/vault/helper/uuid"
+	"github.com/hashicorp/uuid"
 )
 
 // mockRollback returns a mock rollback manager
@@ -25,8 +25,12 @@ func mockRollback(t *testing.T) (*RollbackManager, *NoopBackend) {
 		t.Fatalf("err: %s", err)
 	}
 
+	mountsFunc := func() []*MountEntry {
+		return mounts.Entries
+	}
+
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	rb := NewRollbackManager(logger, mounts, router)
+	rb := NewRollbackManager(logger, mountsFunc, router)
 	rb.period = 10 * time.Millisecond
 	return rb, backend
 }

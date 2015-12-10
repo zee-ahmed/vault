@@ -17,10 +17,12 @@ import (
 	"golang.org/x/crypto/openpgp/packet"
 
 	"github.com/armon/go-metrics"
+	"github.com/hashicorp/errwrap"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/uuid"
 	"github.com/hashicorp/vault/audit"
 	"github.com/hashicorp/vault/helper/mlock"
 	"github.com/hashicorp/vault/helper/pgpkeys"
-	"github.com/hashicorp/vault/helper/uuid"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/physical"
 	"github.com/hashicorp/vault/shamir"
@@ -52,6 +54,10 @@ const (
 	// keyRotateGracePeriod is how long we allow an upgrade path
 	// for standby instances before we delete the upgrade keys
 	keyRotateGracePeriod = 2 * time.Minute
+
+	// leaderPrefixCleanDelay is how long to wait between deletions
+	// of orphaned leader keys, to prevent slamming the backend.
+	leaderPrefixCleanDelay = 200 * time.Millisecond
 )
 
 var (
@@ -208,13 +214,25 @@ type Core struct {
 	// configuration
 	mounts *MountTable
 
+	// mountsLock is used to ensure that the mounts table does not
+	// change underneath a calling function
+	mountsLock sync.RWMutex
+
 	// auth is loaded after unseal since it is a protected
 	// configuration
 	auth *MountTable
 
+	// authLock is used to ensure that the auth table does not
+	// change underneath a calling function
+	authLock sync.RWMutex
+
 	// audit is loaded after unseal since it is a protected
 	// configuration
 	audit *MountTable
+
+	// auditLock is used to ensure that the audit table does not
+	// change underneath a calling function
+	auditLock sync.RWMutex
 
 	// auditBroker is used to ingest the audit events and fan
 	// out into the configured audit backends
@@ -231,13 +249,17 @@ type Core struct {
 	rollback *RollbackManager
 
 	// policy store is used to manage named ACL policies
-	policy *PolicyStore
+	policyStore *PolicyStore
 
 	// token store is used to manage authentication tokens
 	tokenStore *TokenStore
 
 	// metricsCh is used to stop the metrics streaming
 	metricsCh chan struct{}
+
+	// metricsMutex is used to prevent a race condition between
+	// metrics emission and sealing leading to a nil pointer
+	metricsMutex sync.Mutex
 
 	defaultLeaseTTL time.Duration
 	maxLeaseTTL     time.Duration
@@ -439,10 +461,14 @@ func (c *Core) handleRequest(req *logical.Request) (retResp *logical.Response, r
 		defer func() {
 			// Attempt to use the token (decrement num_uses)
 			// If a secret was generated and num_uses is currently 1, it will be
-			// immediately revoked; in that case, don't return the generated
+			// immediately revoked; in that case, don't return the leased
 			// credentials as they are now invalid.
-			if retResp != nil && te != nil && te.NumUses == 1 && retResp.Secret != nil {
-				retResp = logical.ErrorResponse("Secret cannot be returned; token had one use left, so generated credentials were immediately revoked.")
+			if retResp != nil &&
+				te != nil && te.NumUses == 1 &&
+				retResp.Secret != nil &&
+				// Some backends return a TTL even without a Lease ID
+				retResp.Secret.LeaseID != "" {
+				retResp = logical.ErrorResponse("Secret cannot be returned; token had one use left, so leased credentials were immediately revoked.")
 			}
 			if err := c.tokenStore.UseToken(te); err != nil {
 				c.logger.Printf("[ERR] core: failed to use token: %v", err)
@@ -496,8 +522,7 @@ func (c *Core) handleRequest(req *logical.Request) (retResp *logical.Response, r
 
 		// Apply the default lease if none given
 		if resp.Secret.TTL == 0 {
-			ttl := sysView.DefaultLeaseTTL()
-			resp.Secret.TTL = ttl
+			resp.Secret.TTL = sysView.DefaultLeaseTTL()
 		}
 
 		// Limit the lease duration
@@ -544,14 +569,21 @@ func (c *Core) handleRequest(req *logical.Request) (retResp *logical.Response, r
 			return nil, auth, ErrInternalError
 		}
 
-		// Set the default lease if non-provided, root tokens are exempt
+		sysView := c.router.MatchingSystemView(req.Path)
+		if sysView == nil {
+			c.logger.Println("[ERR] core: unable to retrieve system view from router")
+			return nil, auth, ErrInternalError
+		}
+
+		// Apply the default lease if none given
 		if resp.Auth.TTL == 0 && !strListContains(resp.Auth.Policies, "root") {
-			resp.Auth.TTL = c.defaultLeaseTTL
+			resp.Auth.TTL = sysView.DefaultLeaseTTL()
 		}
 
 		// Limit the lease duration
-		if resp.Auth.TTL > c.maxLeaseTTL {
-			resp.Auth.TTL = c.maxLeaseTTL
+		maxTTL := sysView.MaxLeaseTTL()
+		if resp.Auth.TTL > maxTTL {
+			resp.Auth.TTL = maxTTL
 		}
 
 		// Register with the expiration manager
@@ -628,7 +660,11 @@ func (c *Core) handleLoginRequest(req *logical.Request) (*logical.Response, *log
 			TTL:          auth.TTL,
 		}
 
-		if err := c.tokenStore.Create(&te); err != nil {
+		if !strListSubset(te.Policies, []string{"root"}) {
+			te.Policies = append(te.Policies, "default")
+		}
+
+		if err := c.tokenStore.create(&te); err != nil {
 			c.logger.Printf("[ERR] core: failed to create token: %v", err)
 			return nil, auth, ErrInternalError
 		}
@@ -677,7 +713,7 @@ func (c *Core) checkToken(
 	}
 
 	// Construct the corresponding ACL object
-	acl, err := c.policy.ACL(te.Policies...)
+	acl, err := c.policyStore.ACL(te.Policies...)
 	if err != nil {
 		c.logger.Printf("[ERR] core: failed to construct ACL: %v", err)
 		return nil, nil, ErrInternalError
@@ -825,7 +861,7 @@ func (c *Core) Initialize(config *SealConfig) (*InitResult, error) {
 	}
 
 	// Generate a new root token
-	rootToken, err := c.tokenStore.RootToken()
+	rootToken, err := c.tokenStore.rootToken()
 	if err != nil {
 		c.logger.Printf("[ERR] core: root token generation failed: %v", err)
 		return nil, err
@@ -941,6 +977,17 @@ func (c *Core) SecretProgress() int {
 	c.stateLock.RLock()
 	defer c.stateLock.RUnlock()
 	return len(c.unlockParts)
+}
+
+// ResetUnsealProcess removes the current unlock parts from memory, to reset
+// the unsealing process
+func (c *Core) ResetUnsealProcess() {
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
+	if !c.sealed {
+		return
+	}
+	c.unlockParts = nil
 }
 
 // Unseal is used to provide one of the key parts to unseal the Vault.
@@ -1328,8 +1375,13 @@ func (c *Core) RekeyCancel() error {
 // allowing any user operations. This allows us to setup any state that
 // requires the Vault to be unsealed such as mount tables, logical backends,
 // credential stores, etc.
-func (c *Core) postUnseal() error {
+func (c *Core) postUnseal() (retErr error) {
 	defer metrics.MeasureSince([]string{"core", "post_unseal"}, time.Now())
+	defer func() {
+		if retErr != nil {
+			c.preSeal()
+		}
+	}()
 	c.logger.Printf("[INFO] core: post-unseal setup starting")
 	if cache, ok := c.physical.(*physical.Cache); ok {
 		cache.Purge()
@@ -1359,13 +1411,13 @@ func (c *Core) postUnseal() error {
 		return err
 	}
 	if err := c.setupPolicyStore(); err != nil {
-		return nil
+		return err
 	}
 	if err := c.loadCredentials(); err != nil {
-		return nil
+		return err
 	}
 	if err := c.setupCredentials(); err != nil {
-		return nil
+		return err
 	}
 	if err := c.setupExpiration(); err != nil {
 		return err
@@ -1396,29 +1448,30 @@ func (c *Core) preSeal() error {
 		close(c.metricsCh)
 		c.metricsCh = nil
 	}
+	var result error
 	if err := c.teardownAudits(); err != nil {
-		return err
+		result = multierror.Append(result, errwrap.Wrapf("[ERR] error tearing down audits: {{err}}", err))
 	}
 	if err := c.stopExpiration(); err != nil {
-		return err
+		result = multierror.Append(result, errwrap.Wrapf("[ERR] error stopping expiration: {{err}}", err))
 	}
 	if err := c.teardownCredentials(); err != nil {
-		return err
+		result = multierror.Append(result, errwrap.Wrapf("[ERR] error tearing down credentials: {{err}}", err))
 	}
 	if err := c.teardownPolicyStore(); err != nil {
-		return err
+		result = multierror.Append(result, errwrap.Wrapf("[ERR] error tearing down policy store: {{err}}", err))
 	}
 	if err := c.stopRollback(); err != nil {
-		return err
+		result = multierror.Append(result, errwrap.Wrapf("[ERR] error stopping rollback: {{err}}", err))
 	}
 	if err := c.unloadMounts(); err != nil {
-		return err
+		result = multierror.Append(result, errwrap.Wrapf("[ERR] error unloading mounts: {{err}}", err))
 	}
 	if cache, ok := c.physical.(*physical.Cache); ok {
 		cache.Purge()
 	}
 	c.logger.Printf("[INFO] core: pre-seal teardown complete")
-	return nil
+	return result
 }
 
 // runStandby is a long running routine that is used when an HA backend
@@ -1454,16 +1507,16 @@ func (c *Core) runStandby(doneCh, stopCh chan struct{}) {
 		}
 
 		// Attempt the acquisition
-		leaderCh := c.acquireLock(lock, stopCh)
+		leaderLostCh := c.acquireLock(lock, stopCh)
 
 		// Bail if we are being shutdown
-		if leaderCh == nil {
+		if leaderLostCh == nil {
 			return
 		}
 		c.logger.Printf("[INFO] core: acquired lock, enabling active operation")
 
 		// Advertise ourself as leader
-		if err := c.advertiseLeader(uuid); err != nil {
+		if err := c.advertiseLeader(uuid, leaderLostCh); err != nil {
 			c.logger.Printf("[ERR] core: leader advertisement setup failed: %v", err)
 			lock.Unlock()
 			continue
@@ -1486,7 +1539,7 @@ func (c *Core) runStandby(doneCh, stopCh chan struct{}) {
 
 		// Monitor a loss of leadership
 		select {
-		case <-leaderCh:
+		case <-leaderLostCh:
 			c.logger.Printf("[WARN] core: leadership lost, stopping active operation")
 		case <-stopCh:
 			c.logger.Printf("[WARN] core: stopping active operation")
@@ -1500,16 +1553,15 @@ func (c *Core) runStandby(doneCh, stopCh chan struct{}) {
 		// Attempt the pre-seal process
 		c.stateLock.Lock()
 		c.standby = true
-		err = c.preSeal()
+		preSealErr := c.preSeal()
 		c.stateLock.Unlock()
 
 		// Give up leadership
 		lock.Unlock()
 
 		// Check for a failure to prepare to seal
-		if err := c.preSeal(); err != nil {
+		if preSealErr != nil {
 			c.logger.Printf("[ERR] core: pre-seal teardown failed: %v", err)
-			continue
 		}
 	}
 }
@@ -1582,13 +1634,13 @@ func (c *Core) scheduleUpgradeCleanup() error {
 	return nil
 }
 
-// acquireLock blocks until the lock is acquired, returning the leaderCh
+// acquireLock blocks until the lock is acquired, returning the leaderLostCh
 func (c *Core) acquireLock(lock physical.Lock, stopCh <-chan struct{}) <-chan struct{} {
 	for {
 		// Attempt lock acquisition
-		leaderCh, err := lock.Lock(stopCh)
+		leaderLostCh, err := lock.Lock(stopCh)
 		if err == nil {
-			return leaderCh
+			return leaderLostCh
 		}
 
 		// Retry the acquisition
@@ -1602,12 +1654,32 @@ func (c *Core) acquireLock(lock physical.Lock, stopCh <-chan struct{}) <-chan st
 }
 
 // advertiseLeader is used to advertise the current node as leader
-func (c *Core) advertiseLeader(uuid string) error {
+func (c *Core) advertiseLeader(uuid string, leaderLostCh <-chan struct{}) error {
+	go c.cleanLeaderPrefix(uuid, leaderLostCh)
 	ent := &Entry{
 		Key:   coreLeaderPrefix + uuid,
 		Value: []byte(c.advertiseAddr),
 	}
 	return c.barrier.Put(ent)
+}
+
+func (c *Core) cleanLeaderPrefix(uuid string, leaderLostCh <-chan struct{}) {
+	keys, err := c.barrier.List(coreLeaderPrefix)
+	if err != nil {
+		c.logger.Printf("[ERR] core: failed to list entries in core/leader: %v", err)
+		return
+	}
+	for len(keys) > 0 {
+		select {
+		case <-time.After(leaderPrefixCleanDelay):
+			if keys[0] != uuid {
+				c.barrier.Delete(coreLeaderPrefix + keys[0])
+			}
+			keys = keys[1:]
+		case <-leaderLostCh:
+			return
+		}
+	}
 }
 
 // clearLeader is used to clear our leadership entry
@@ -1621,7 +1693,11 @@ func (c *Core) emitMetrics(stopCh chan struct{}) {
 	for {
 		select {
 		case <-time.After(time.Second):
-			c.expiration.emitMetrics()
+			c.metricsMutex.Lock()
+			if c.expiration != nil {
+				c.expiration.emitMetrics()
+			}
+			c.metricsMutex.Unlock()
 		case <-stopCh:
 			return
 		}

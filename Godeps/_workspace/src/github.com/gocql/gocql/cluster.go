@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gocql/gocql/lru"
+	"github.com/gocql/gocql/internal/lru"
 )
 
 const defaultMaxPreparedStmts = 1000
@@ -50,6 +50,33 @@ type DiscoveryConfig struct {
 	Sleep time.Duration
 }
 
+// PoolConfig configures the connection pool used by the driver, it defaults to
+// using a round robbin host selection policy and a round robbin connection selection
+// policy for each host.
+type PoolConfig struct {
+	// HostSelectionPolicy sets the policy for selecting which host to use for a
+	// given query (default: RoundRobinHostPolicy())
+	HostSelectionPolicy HostSelectionPolicy
+
+	// ConnSelectionPolicy sets the policy factory for selecting a connection to use for
+	// each host for a query (default: RoundRobinConnPolicy())
+	ConnSelectionPolicy func() ConnSelectionPolicy
+}
+
+func (p PoolConfig) buildPool(session *Session) (*policyConnPool, error) {
+	hostSelection := p.HostSelectionPolicy
+	if hostSelection == nil {
+		hostSelection = RoundRobinHostPolicy()
+	}
+
+	connSelection := p.ConnSelectionPolicy
+	if connSelection == nil {
+		connSelection = RoundRobinConnPolicy()
+	}
+
+	return newPolicyConnPool(session, hostSelection, connSelection)
+}
+
 // ClusterConfig is a struct to configure the default cluster implementation
 // of gocoql. It has a varity of attributes that can be used to modify the
 // behavior to fit the most common use cases. Applications that requre a
@@ -62,13 +89,11 @@ type ClusterConfig struct {
 	Port              int               // port (default: 9042)
 	Keyspace          string            // initial keyspace (optional)
 	NumConns          int               // number of connections per host (default: 2)
-	NumStreams        int               // number of streams per connection (default: max per protocol, either 128 or 32768)
 	Consistency       Consistency       // default consistency level (default: Quorum)
 	Compressor        Compressor        // compression algorithm (default: nil)
 	Authenticator     Authenticator     // authenticator (default: nil)
 	RetryPolicy       RetryPolicy       // Default retry policy to use for queries (default: 0)
 	SocketKeepalive   time.Duration     // The keepalive period to use, enabled if > 0 (default: 0)
-	ConnPoolType      NewPoolFunc       // The function used to create the connection pool for the session (default: NewSimplePool)
 	DiscoverHosts     bool              // If set, gocql will attempt to automatically discover other members of the Cassandra cluster (default: false)
 	MaxPreparedStmts  int               // Sets the maximum cache size for prepared statements globally for gocql (default: 1000)
 	MaxRoutingKeyInfo int               // Sets the maximum cache size for query info about statements for each session (default: 1000)
@@ -77,24 +102,34 @@ type ClusterConfig struct {
 	Discovery         DiscoveryConfig
 	SslOpts           *SslOptions
 	DefaultTimestamp  bool // Sends a client side timestamp for all requests which overrides the timestamp at which it arrives at the server. (default: true, only enabled for protocol 3 and above)
+	// PoolConfig configures the underlying connection pool, allowing the
+	// configuration of host selection and connection selection policies.
+	PoolConfig PoolConfig
+
+	// The maximum amount of time to wait for schema agreement in a cluster after
+	// receiving a schema change frame. (deault: 60s)
+	MaxWaitSchemaAgreement time.Duration
+
+	// internal config for testing
+	disableControlConn bool
 }
 
 // NewCluster generates a new config for the default cluster implementation.
 func NewCluster(hosts ...string) *ClusterConfig {
 	cfg := &ClusterConfig{
-		Hosts:             hosts,
-		CQLVersion:        "3.0.0",
-		ProtoVersion:      2,
-		Timeout:           600 * time.Millisecond,
-		Port:              9042,
-		NumConns:          2,
-		Consistency:       Quorum,
-		ConnPoolType:      NewSimplePool,
-		DiscoverHosts:     false,
-		MaxPreparedStmts:  defaultMaxPreparedStmts,
-		MaxRoutingKeyInfo: 1000,
-		PageSize:          5000,
-		DefaultTimestamp:  true,
+		Hosts:                  hosts,
+		CQLVersion:             "3.0.0",
+		ProtoVersion:           2,
+		Timeout:                600 * time.Millisecond,
+		Port:                   9042,
+		NumConns:               2,
+		Consistency:            Quorum,
+		DiscoverHosts:          false,
+		MaxPreparedStmts:       defaultMaxPreparedStmts,
+		MaxRoutingKeyInfo:      1000,
+		PageSize:               5000,
+		DefaultTimestamp:       true,
+		MaxWaitSchemaAgreement: 60 * time.Second,
 	}
 	return cfg
 }

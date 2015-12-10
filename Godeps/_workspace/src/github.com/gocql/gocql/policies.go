@@ -8,10 +8,12 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+
+	"github.com/hailocab/go-hostpool"
 )
 
-//RetryableQuery is an interface that represents a query or batch statement that
-//exposes the correct functions for the retry policy logic to evaluate correctly.
+// RetryableQuery is an interface that represents a query or batch statement that
+// exposes the correct functions for the retry policy logic to evaluate correctly.
 type RetryableQuery interface {
 	Attempts() int
 	GetConsistency() Consistency
@@ -48,8 +50,8 @@ func (s *SimpleRetryPolicy) Attempt(q RetryableQuery) bool {
 	return q.Attempts() <= s.NumRetries
 }
 
-//HostSelectionPolicy is an interface for selecting
-//the most appropriate host to execute a given query.
+// HostSelectionPolicy is an interface for selecting
+// the most appropriate host to execute a given query.
 type HostSelectionPolicy interface {
 	SetHosts
 	SetPartitioner
@@ -57,11 +59,19 @@ type HostSelectionPolicy interface {
 	Pick(*Query) NextHost
 }
 
-//NextHost is an iteration function over picked hosts
-type NextHost func() *HostInfo
+// SelectedHost is an interface returned when picking a host from a host
+// selection policy.
+type SelectedHost interface {
+	Info() *HostInfo
+	Mark(error)
+}
 
-//NewRoundRobinHostPolicy is a round-robin load balancing policy
-func NewRoundRobinHostPolicy() HostSelectionPolicy {
+// NextHost is an iteration function over picked hosts
+type NextHost func() SelectedHost
+
+// RoundRobinHostPolicy is a round-robin load balancing policy, where each host
+// is tried sequentially for each query.
+func RoundRobinHostPolicy() HostSelectionPolicy {
 	return &roundRobinHostPolicy{hosts: []HostInfo{}}
 }
 
@@ -84,29 +94,44 @@ func (r *roundRobinHostPolicy) SetPartitioner(partitioner string) {
 func (r *roundRobinHostPolicy) Pick(qry *Query) NextHost {
 	// i is used to limit the number of attempts to find a host
 	// to the number of hosts known to this policy
-	var i uint32 = 0
-	return func() *HostInfo {
+	var i int
+	return func() SelectedHost {
 		r.mu.RLock()
+		defer r.mu.RUnlock()
 		if len(r.hosts) == 0 {
-			r.mu.RUnlock()
 			return nil
 		}
 
-		var host *HostInfo
 		// always increment pos to evenly distribute traffic in case of
 		// failures
 		pos := atomic.AddUint32(&r.pos, 1)
-		if int(i) < len(r.hosts) {
-			host = &r.hosts[(pos)%uint32(len(r.hosts))]
-			i++
+		if i >= len(r.hosts) {
+			return nil
 		}
-		r.mu.RUnlock()
-		return host
+		host := &r.hosts[(pos)%uint32(len(r.hosts))]
+		i++
+		return selectedRoundRobinHost{host}
 	}
 }
 
-//NewTokenAwareHostPolicy is a token aware host selection policy
-func NewTokenAwareHostPolicy(fallback HostSelectionPolicy) HostSelectionPolicy {
+// selectedRoundRobinHost is a host returned by the roundRobinHostPolicy and
+// implements the SelectedHost interface
+type selectedRoundRobinHost struct {
+	info *HostInfo
+}
+
+func (host selectedRoundRobinHost) Info() *HostInfo {
+	return host.info
+}
+
+func (host selectedRoundRobinHost) Mark(err error) {
+	// noop
+}
+
+// TokenAwareHostPolicy is a token aware host selection policy, where hosts are
+// selected based on the partition key, so queries are sent to the host which
+// owns the partition. Fallback is used when routing information is not available.
+func TokenAwareHostPolicy(fallback HostSelectionPolicy) HostSelectionPolicy {
 	return &tokenAwareHostPolicy{fallback: fallback, hosts: []HostInfo{}}
 }
 
@@ -161,6 +186,11 @@ func (t *tokenAwareHostPolicy) resetTokenRing() {
 func (t *tokenAwareHostPolicy) Pick(qry *Query) NextHost {
 	if qry == nil {
 		return t.fallback.Pick(qry)
+	} else if qry.binding != nil && len(qry.values) == 0 {
+		// If this query was created using session.Bind we wont have the query
+		// values yet, so we have to pass down to the next policy.
+		// TODO: Remove this and handle this case
+		return t.fallback.Pick(qry)
 	}
 
 	routingKey, err := qry.GetRoutingKey()
@@ -171,11 +201,9 @@ func (t *tokenAwareHostPolicy) Pick(qry *Query) NextHost {
 		return t.fallback.Pick(qry)
 	}
 
-	var host *HostInfo
-
 	t.mu.RLock()
 	// TODO retrieve a list of hosts based on the replication strategy
-	host = t.tokenRing.GetHostForPartitionKey(routingKey)
+	host := t.tokenRing.GetHostForPartitionKey(routingKey)
 	t.mu.RUnlock()
 
 	if host == nil {
@@ -187,10 +215,10 @@ func (t *tokenAwareHostPolicy) Pick(qry *Query) NextHost {
 		hostReturned bool
 		fallbackIter NextHost
 	)
-	return func() *HostInfo {
+	return func() SelectedHost {
 		if !hostReturned {
 			hostReturned = true
-			return host
+			return selectedTokenAwareHost{host}
 		}
 
 		// fallback
@@ -201,12 +229,103 @@ func (t *tokenAwareHostPolicy) Pick(qry *Query) NextHost {
 		fallbackHost := fallbackIter()
 
 		// filter the token aware selected hosts from the fallback hosts
-		if fallbackHost == host {
+		if fallbackHost.Info() == host {
 			fallbackHost = fallbackIter()
 		}
 
 		return fallbackHost
 	}
+}
+
+// selectedTokenAwareHost is a host returned by the tokenAwareHostPolicy and
+// implements the SelectedHost interface
+type selectedTokenAwareHost struct {
+	info *HostInfo
+}
+
+func (host selectedTokenAwareHost) Info() *HostInfo {
+	return host.info
+}
+
+func (host selectedTokenAwareHost) Mark(err error) {
+	// noop
+}
+
+// HostPoolHostPolicy is a host policy which uses the bitly/go-hostpool library
+// to distribute queries between hosts and prevent sending queries to
+// unresponsive hosts. When creating the host pool that is passed to the policy
+// use an empty slice of hosts as the hostpool will be populated later by gocql.
+// See below for examples of usage:
+//
+//     // Create host selection policy using a simple host pool
+//     cluster.PoolConfig.HostSelectionPolicy = HostPoolHostPolicy(hostpool.New(nil))
+//
+//     // Create host selection policy using an epsilon greddy pool
+//     cluster.PoolConfig.HostSelectionPolicy = HostPoolHostPolicy(
+//         hostpool.NewEpsilonGreedy(nil, 0, &hostpool.LinearEpsilonValueCalculator{}),
+//     )
+//
+func HostPoolHostPolicy(hp hostpool.HostPool) HostSelectionPolicy {
+	return &hostPoolHostPolicy{hostMap: map[string]HostInfo{}, hp: hp}
+}
+
+type hostPoolHostPolicy struct {
+	hp      hostpool.HostPool
+	hostMap map[string]HostInfo
+	mu      sync.RWMutex
+}
+
+func (r *hostPoolHostPolicy) SetHosts(hosts []HostInfo) {
+	peers := make([]string, len(hosts))
+	hostMap := make(map[string]HostInfo, len(hosts))
+
+	for i, host := range hosts {
+		peers[i] = host.Peer
+		hostMap[host.Peer] = host
+	}
+
+	r.mu.Lock()
+	r.hp.SetHosts(peers)
+	r.hostMap = hostMap
+	r.mu.Unlock()
+}
+
+func (r *hostPoolHostPolicy) SetPartitioner(partitioner string) {
+	// noop
+}
+
+func (r *hostPoolHostPolicy) Pick(qry *Query) NextHost {
+	return func() SelectedHost {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+
+		if len(r.hostMap) == 0 {
+			return nil
+		}
+
+		hostR := r.hp.Get()
+		host, ok := r.hostMap[hostR.Host()]
+		if !ok {
+			return nil
+		}
+
+		return selectedHostPoolHost{&host, hostR}
+	}
+}
+
+// selectedHostPoolHost is a host returned by the hostPoolHostPolicy and
+// implements the SelectedHost interface
+type selectedHostPoolHost struct {
+	info  *HostInfo
+	hostR hostpool.HostPoolResponse
+}
+
+func (host selectedHostPoolHost) Info() *HostInfo {
+	return host.info
+}
+
+func (host selectedHostPoolHost) Mark(err error) {
+	host.hostR.Mark(err)
 }
 
 //ConnSelectionPolicy is an interface for selecting an
@@ -222,8 +341,10 @@ type roundRobinConnPolicy struct {
 	mu    sync.RWMutex
 }
 
-func NewRoundRobinConnPolicy() ConnSelectionPolicy {
-	return &roundRobinConnPolicy{}
+func RoundRobinConnPolicy() func() ConnSelectionPolicy {
+	return func() ConnSelectionPolicy {
+		return &roundRobinConnPolicy{}
+	}
 }
 
 func (r *roundRobinConnPolicy) SetConns(conns []*Conn) {
@@ -233,12 +354,20 @@ func (r *roundRobinConnPolicy) SetConns(conns []*Conn) {
 }
 
 func (r *roundRobinConnPolicy) Pick(qry *Query) *Conn {
-	pos := atomic.AddUint32(&r.pos, 1)
-	var conn *Conn
+	pos := int(atomic.AddUint32(&r.pos, 1) - 1)
 	r.mu.RLock()
-	if len(r.conns) > 0 {
-		conn = r.conns[pos%uint32(len(r.conns))]
+	defer r.mu.RUnlock()
+
+	if len(r.conns) == 0 {
+		return nil
 	}
-	r.mu.RUnlock()
-	return conn
+
+	for i := 0; i < len(r.conns); i++ {
+		conn := r.conns[(pos+i)%len(r.conns)]
+		if conn.AvailableStreams() > 0 {
+			return conn
+		}
+	}
+
+	return nil
 }

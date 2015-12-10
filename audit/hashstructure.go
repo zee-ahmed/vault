@@ -10,6 +10,11 @@ import (
 	"github.com/mitchellh/reflectwalk"
 )
 
+// HashString hashes the given opaque string and returns it
+func HashString(salter *salt.Salt, data string) string {
+	return salter.GetIdentifiedHMAC(data)
+}
+
 // Hash will hash the given type. This has built-in support for auth,
 // requests, and responses. If it is a type that isn't recognized, then
 // it will be passed through.
@@ -27,6 +32,7 @@ func Hash(salter *salt.Salt, raw interface{}) error {
 			token := fn(s.ClientToken)
 			s.ClientToken = token
 		}
+
 	case *logical.Request:
 		if s == nil {
 			return nil
@@ -37,16 +43,23 @@ func Hash(salter *salt.Salt, raw interface{}) error {
 			}
 		}
 
+		if s.ClientToken != "" {
+			token := fn(s.ClientToken)
+			s.ClientToken = token
+		}
+
 		data, err := HashStructure(s.Data, fn)
 		if err != nil {
 			return err
 		}
 
 		s.Data = data.(map[string]interface{})
+
 	case *logical.Response:
 		if s == nil {
 			return nil
 		}
+
 		if s.Auth != nil {
 			if err := Hash(salter, s.Auth); err != nil {
 				return err

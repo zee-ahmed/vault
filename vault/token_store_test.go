@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/vault/helper/uuid"
+	"github.com/hashicorp/uuid"
 	"github.com/hashicorp/vault/logical"
 )
 
@@ -52,7 +52,7 @@ func mockTokenStore(t *testing.T) (*Core, *TokenStore, string) {
 func TestTokenStore_RootToken(t *testing.T) {
 	_, ts, _ := mockTokenStore(t)
 
-	te, err := ts.RootToken()
+	te, err := ts.rootToken()
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestTokenStore_CreateLookup(t *testing.T) {
 	c, ts, _ := mockTokenStore(t)
 
 	ent := &TokenEntry{Path: "test", Policies: []string{"dev", "ops"}}
-	if err := ts.Create(ent); err != nil {
+	if err := ts.create(ent); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if ent.ID == "" {
@@ -112,7 +112,7 @@ func TestTokenStore_CreateLookup_ProvidedID(t *testing.T) {
 		Path:     "test",
 		Policies: []string{"dev", "ops"},
 	}
-	if err := ts.Create(ent); err != nil {
+	if err := ts.create(ent); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if ent.ID != "foobarbaz" {
@@ -170,7 +170,7 @@ func TestTokenStore_UseToken(t *testing.T) {
 
 	// Create a retstricted token
 	ent = &TokenEntry{Path: "test", Policies: []string{"dev", "ops"}, NumUses: 2}
-	if err := ts.Create(ent); err != nil {
+	if err := ts.create(ent); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -213,7 +213,7 @@ func TestTokenStore_Revoke(t *testing.T) {
 	_, ts, _ := mockTokenStore(t)
 
 	ent := &TokenEntry{Path: "test", Policies: []string{"dev", "ops"}}
-	if err := ts.Create(ent); err != nil {
+	if err := ts.create(ent); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -243,7 +243,7 @@ func TestTokenStore_Revoke_Leases(t *testing.T) {
 	ts.expiration.router.Mount(noop, "", &MountEntry{UUID: ""}, nil)
 
 	ent := &TokenEntry{Path: "test", Policies: []string{"dev", "ops"}}
-	if err := ts.Create(ent); err != nil {
+	if err := ts.create(ent); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -289,12 +289,12 @@ func TestTokenStore_Revoke_Orphan(t *testing.T) {
 	_, ts, _ := mockTokenStore(t)
 
 	ent := &TokenEntry{Path: "test", Policies: []string{"dev", "ops"}}
-	if err := ts.Create(ent); err != nil {
+	if err := ts.create(ent); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	ent2 := &TokenEntry{Parent: ent.ID}
-	if err := ts.Create(ent2); err != nil {
+	if err := ts.create(ent2); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -316,22 +316,22 @@ func TestTokenStore_RevokeTree(t *testing.T) {
 	_, ts, _ := mockTokenStore(t)
 
 	ent1 := &TokenEntry{}
-	if err := ts.Create(ent1); err != nil {
+	if err := ts.create(ent1); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	ent2 := &TokenEntry{Parent: ent1.ID}
-	if err := ts.Create(ent2); err != nil {
+	if err := ts.create(ent2); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	ent3 := &TokenEntry{Parent: ent2.ID}
-	if err := ts.Create(ent3); err != nil {
+	if err := ts.create(ent3); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	ent4 := &TokenEntry{Parent: ent2.ID}
-	if err := ts.Create(ent4); err != nil {
+	if err := ts.create(ent4); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -360,22 +360,22 @@ func TestTokenStore_RevokeSelf(t *testing.T) {
 	_, ts, _ := mockTokenStore(t)
 
 	ent1 := &TokenEntry{}
-	if err := ts.Create(ent1); err != nil {
+	if err := ts.create(ent1); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	ent2 := &TokenEntry{Parent: ent1.ID}
-	if err := ts.Create(ent2); err != nil {
+	if err := ts.create(ent2); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	ent3 := &TokenEntry{Parent: ent2.ID}
-	if err := ts.Create(ent3); err != nil {
+	if err := ts.create(ent3); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	ent4 := &TokenEntry{Parent: ent2.ID}
-	if err := ts.Create(ent4); err != nil {
+	if err := ts.create(ent4); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -662,6 +662,27 @@ func TestTokenStore_HandleRequest_CreateToken_Root_NoParent(t *testing.T) {
 	}
 }
 
+func TestTokenStore_HandleRequest_CreateToken_PathBased_NoParent(t *testing.T) {
+	_, ts, root := mockTokenStore(t)
+
+	req := logical.TestRequest(t, logical.WriteOperation, "create-orphan")
+	req.ClientToken = root
+	req.Data["policies"] = []string{"foo"}
+
+	resp, err := ts.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v %v", err, resp)
+	}
+	if resp.Auth.ClientToken == "" {
+		t.Fatalf("bad: %#v", resp)
+	}
+
+	out, _ := ts.Lookup(resp.Auth.ClientToken)
+	if out.Parent != "" {
+		t.Fatalf("bad: %#v", out)
+	}
+}
+
 func TestTokenStore_HandleRequest_CreateToken_Metadata(t *testing.T) {
 	_, ts, root := mockTokenStore(t)
 
@@ -845,12 +866,39 @@ func TestTokenStore_HandleRequest_Lookup(t *testing.T) {
 		"path":         "auth/token/root",
 		"meta":         map[string]string(nil),
 		"display_name": "root",
+		"orphan":       true,
 		"num_uses":     0,
 		"ttl":          0,
 	}
 	delete(resp.Data, "creation_time")
 	if !reflect.DeepEqual(resp.Data, exp) {
-		t.Fatalf("bad: %#v exp: %#v", resp.Data, exp)
+		t.Fatalf("bad:\n%#v\nexp:\n%#v\n", resp.Data, exp)
+	}
+
+	testMakeToken(t, ts, root, "client", []string{"foo"})
+
+	req = logical.TestRequest(t, logical.ReadOperation, "lookup/client")
+	resp, err = ts.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v %v", err, resp)
+	}
+	if resp == nil {
+		t.Fatalf("bad: %#v", resp)
+	}
+
+	exp = map[string]interface{}{
+		"id":           "client",
+		"policies":     []string{"foo", "default"},
+		"path":         "auth/token/create",
+		"meta":         map[string]string(nil),
+		"display_name": "token",
+		"orphan":       false,
+		"num_uses":     0,
+		"ttl":          2592000,
+	}
+	delete(resp.Data, "creation_time")
+	if !reflect.DeepEqual(resp.Data, exp) {
+		t.Fatalf("bad:\n%#v\nexp:\n%#v\n", resp.Data, exp)
 	}
 }
 
@@ -859,7 +907,7 @@ func TestTokenStore_HandleRequest_RevokePrefix(t *testing.T) {
 	ts := exp.tokenStore
 
 	// Create new token
-	root, err := ts.RootToken()
+	root, err := ts.rootToken()
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -912,6 +960,7 @@ func TestTokenStore_HandleRequest_LookupSelf(t *testing.T) {
 		"path":         "auth/token/root",
 		"meta":         map[string]string(nil),
 		"display_name": "root",
+		"orphan":       true,
 		"num_uses":     0,
 		"ttl":          0,
 	}
@@ -926,7 +975,7 @@ func TestTokenStore_HandleRequest_Renew(t *testing.T) {
 	ts := exp.tokenStore
 
 	// Create new token
-	root, err := ts.RootToken()
+	root, err := ts.rootToken()
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -949,6 +998,51 @@ func TestTokenStore_HandleRequest_Renew(t *testing.T) {
 
 	beforeRenew := time.Now().UTC()
 	req := logical.TestRequest(t, logical.WriteOperation, "renew/"+root.ID)
+	req.Data["increment"] = "3600s"
+	resp, err := ts.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v %v", err, resp)
+	}
+
+	// Get the new expire time
+	newExpire := resp.Auth.ExpirationTime()
+	if newExpire.Before(originalExpire) {
+		t.Fatalf("should expire later: %s %s", newExpire, originalExpire)
+	}
+	if newExpire.Before(beforeRenew.Add(time.Hour)) {
+		t.Fatalf("should have at least an hour: %s %s", newExpire, beforeRenew)
+	}
+}
+
+func TestTokenStore_HandleRequest_RenewSelf(t *testing.T) {
+	exp := mockExpiration(t)
+	ts := exp.tokenStore
+
+	// Create new token
+	root, err := ts.rootToken()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Create a new token
+	auth := &logical.Auth{
+		ClientToken: root.ID,
+		LeaseOptions: logical.LeaseOptions{
+			TTL:       time.Hour,
+			Renewable: true,
+		},
+	}
+	err = exp.RegisterAuth("auth/token/root", auth)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	// Get the original expire time to compare
+	originalExpire := auth.ExpirationTime()
+
+	beforeRenew := time.Now().UTC()
+	req := logical.TestRequest(t, logical.WriteOperation, "renew-self")
+	req.ClientToken = auth.ClientToken
 	req.Data["increment"] = "3600s"
 	resp, err := ts.HandleRequest(req)
 	if err != nil {
