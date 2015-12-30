@@ -1,3 +1,64 @@
+## 0.5.0 (Unreleased)
+
+DEPRECATIONS/BREAKING CHANGES:
+ * S3 physical backend: Environment variables are now preferred over
+   configuration values. This makes it behave similar to the rest of Vault,
+   which, in increasing order of preference, uses values from the configuration
+   file, environment variables, and CLI flags. [GH-871]
+ * `token-renew` CLI command: If the token given for renewal is the same as the
+   client token, the `renew-self` endpoint will be used in the API. Given that
+   the `default` policy (by default) allows all clients access to the
+   `renew-self` endpoint, this makes it much more likely that the intended
+   operation will be successful. [GH-894]
+
+FEATURES:
+
+ * **Split Data/High Availability Physical Backends**: You can now configure
+   two separate physical backends: one to be used for High Availability
+   coordination and another to be used for encrypted data storage. See the
+   [configuration
+   documentation](https://vaultproject.io/docs/config/index.html) for details.
+   [GH-395]
+
+IMPROVEMENTS:
+
+ * cli: Output secrets sorted by key name [GH-830]
+ * cli: Support YAML as an output format [GH-832]
+ * cli: Show an error if the output format is incorrect, rather than falling
+   back to an empty table [GH-849]
+ * cli: Allow setting the `advertise_addr` for HA via the
+   `VAULT_ADVERTISE_ADDR` environment variable [GH-581]
+ * cli/token-lookup: Add token-lookup command [GH-892]
+ * cli/server: Use internal functions for the token-helper rather than shelling
+   out, which fixes some problems with using a static binary in Docker or paths
+   with multiple spaces when launching in `-dev` mode [GH-850]
+ * conf: Use normal bool values rather than empty/non-empty for the
+   `tls_disable` option [GH-802]
+ * helper/certutil: Add ability to parse PKCS#8 bundles [GH-829]
+ * logical/pki: Assign ExtKeyUsageAny to CA certs generated/signed with the
+   backend; this fixes the non-spec validation logic used in the Windows Crypto
+   API and Go's verification functions [GH-846]
+ * physical/etcd: Support basic auth [GH-859]
+
+BUG FIXES:
+ * api: Correct the HTTP verb used in the LookupSelf method [GH-887]
+ * command/ssh: Fix panic when username lookup fails [GH-886]
+ * core: When running in standalone mode, don't advertise that we are active
+   until post-unseal setup completes [GH-872]
+ * core: Update go-cleanhttp dependency to ensure idle connections aren't
+   leaked [GH-867]
+ * core: Don't allow tokens to have duplicate policies [GH-897]
+ * physical: Use square brackets when setting an IPv6-based advertise address
+   as the auto-detected advertise address [GH-883]
+ * physical/s3: Use an initialized client when using IAM roles to fix a
+   regression introduced against newer versions of the AWS Go SDK [GH-836]
+
+MISC:
+
+ * Add `vault-java` to libraries [GH-851]
+ * Various minor documentation fixes and improvements [GH-839] [GH-854]
+   [GH-861] [GH-876] [GH-899]
+
 ## 0.4.0 (December 10, 2015)
 
 DEPRECATIONS/BREAKING CHANGES:
