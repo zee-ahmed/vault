@@ -77,9 +77,17 @@ For the `backend` section, the supported backends are shown below.
 Vault requires that the backend itself will be responsible for backups,
 durability, etc.
 
-  * `consul` - Store data within [Consul](http://www.consul.io). This
-      backend supports HA. It is the most recommended backend for Vault
-      and has been shown to work at high scale under heavy load.
+__*Please note*__: The only physical backends actively maintained by HashiCorp
+are `consul`, `inmem`, and `file`. The other backends are community-derived and
+community-supported. We include them in the hope that they will be useful to
+those users that wish to utilize them, but they receive minimal validation and
+testing from HashiCorp, and HashiCorp staff may not be knowledgeable about the
+data store being utilized. If you encounter problems with them, we will attempt
+to help you, but may refer you to the backend author.
+
+  * `consul` - Store data within [Consul](https://www.consul.io). This
+    backend supports HA. It is the most recommended backend for Vault and has
+    been shown to work at high scale under heavy load.
 
   * `etcd` - Store data within [etcd](https://coreos.com/etcd/).
       This backend supports HA.
@@ -87,8 +95,8 @@ durability, etc.
   * `zookeeper` - Store data within [Zookeeper](https://zookeeper.apache.org/).
       This backend supports HA.
 
-  * `s3` - Store data within an S3 bucket [S3](http://aws.amazon.com/s3/).
-      This backend does not support HA.
+  * `s3` - Store data within an S3 bucket [S3](https://aws.amazon.com/s3/).
+    This backend does not support HA.
 
   * `mysql` - Store data within MySQL. This backend does not support HA.
 
