@@ -305,9 +305,13 @@ only encrypt or decrypt using the named keys they need access to.
 <dl class="api">
   <dt>Description</dt>
   <dd>
-    Encrypts the provided plaintext using the named key. If the named key
-    does not already exist, it will be automatically generated for the given
-    name with the default parameters.
+    Encrypts the provided plaintext using the named key. This path supports the
+    `create` and `update` policy capabilities as follows: if the user has the
+    `create` capability for this endpoint in their policies, and the key does
+    not exist, it will be upserted with default values (whether the key
+    requires derivation depends on whether the context parameter is empty or
+    not). If the user only has `update` capability and the key does not exist,
+    an error will be returned.
   </dd>
 
   <dt>Method</dt>

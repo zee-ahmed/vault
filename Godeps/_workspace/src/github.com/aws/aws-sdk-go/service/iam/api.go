@@ -544,9 +544,6 @@ func (c *IAM) CreateRoleRequest(input *CreateRoleInput) (req *request.Request, o
 // For information about limitations on role names and the number of roles you
 // can create, go to Limitations on IAM Entities (http://docs.aws.amazon.com/IAM/latest/UserGuide/LimitationsOnEntities.html)
 // in the IAM User Guide.
-//
-// The policy in the following example grants permission to an EC2 instance
-// to assume the role.
 func (c *IAM) CreateRole(input *CreateRoleInput) (*CreateRoleOutput, error) {
 	req, out := c.CreateRoleRequest(input)
 	err := req.Send()
@@ -1182,6 +1179,11 @@ func (c *IAM) DeleteServerCertificateRequest(input *DeleteServerCertificateInput
 }
 
 // Deletes the specified server certificate.
+//
+// For more information about working with server certificates, including a
+// list of AWS services that can use the server certificates that you manage
+// with IAM, go to Working with Server Certificates (http://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_server-certs.html)
+// in the IAM User Guide.
 //
 //  If you are using a server certificate with Elastic Load Balancing, deleting
 // the certificate could have implications for your application. If Elastic
@@ -2117,6 +2119,11 @@ func (c *IAM) GetServerCertificateRequest(input *GetServerCertificateInput) (req
 }
 
 // Retrieves information about the specified server certificate.
+//
+// For more information about working with server certificates, including a
+// list of AWS services that can use the server certificates that you manage
+// with IAM, go to Working with Server Certificates (http://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_server-certs.html)
+// in the IAM User Guide.
 func (c *IAM) GetServerCertificate(input *GetServerCertificateInput) (*GetServerCertificateOutput, error) {
 	req, out := c.GetServerCertificateRequest(input)
 	err := req.Send()
@@ -3072,6 +3079,11 @@ func (c *IAM) ListServerCertificatesRequest(input *ListServerCertificatesInput) 
 // exist, the action returns an empty list.
 //
 //  You can paginate the results using the MaxItems and Marker parameters.
+//
+// For more information about working with server certificates, including a
+// list of AWS services that can use the server certificates that you manage
+// with IAM, go to Working with Server Certificates (http://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_server-certs.html)
+// in the IAM User Guide.
 func (c *IAM) ListServerCertificates(input *ListServerCertificatesInput) (*ListServerCertificatesOutput, error) {
 	req, out := c.ListServerCertificatesRequest(input)
 	err := req.Send()
@@ -3966,15 +3978,20 @@ func (c *IAM) UpdateServerCertificateRequest(input *UpdateServerCertificateInput
 
 // Updates the name and/or the path of the specified server certificate.
 //
-//  You should understand the implications of changing a server certificate's
-// path or name. For more information, see Managing Server Certificates (http://docs.aws.amazon.com/IAM/latest/UserGuide/ManagingServerCerts.html)
-// in the IAM User Guide.  To change a server certificate name the requester
+// For more information about working with server certificates, including a
+// list of AWS services that can use the server certificates that you manage
+// with IAM, go to Working with Server Certificates (http://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_server-certs.html)
+// in the IAM User Guide.
+//
+// You should understand the implications of changing a server certificate's
+// path or name. For more information, see Renaming a Server Certificate (http://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_server-certs_manage.html#RenamingServerCerts)
+// in the IAM User Guide. To change a server certificate name the requester
 // must have appropriate permissions on both the source object and the target
 // object. For example, to change the name from ProductionCert to ProdCert,
 // the entity making the request must have permission on ProductionCert and
 // ProdCert, or must have permission on all (*). For more information about
-// permissions, see Permissions and Policies (http://docs.aws.amazon.com/IAM/latest/UserGuide/PermissionsAndPolicies.html"
-// target="blank).
+// permissions, see Access Management (http://docs.aws.amazon.com/IAM/latest/UserGuide/access.html)
+// in the IAM User Guide.
 func (c *IAM) UpdateServerCertificate(input *UpdateServerCertificateInput) (*UpdateServerCertificateOutput, error) {
 	req, out := c.UpdateServerCertificateRequest(input)
 	err := req.Send()
@@ -4108,8 +4125,13 @@ func (c *IAM) UploadServerCertificateRequest(input *UploadServerCertificateInput
 // entity includes a public key certificate, a private key, and an optional
 // certificate chain, which should all be PEM-encoded.
 //
+// For more information about working with server certificates, including a
+// list of AWS services that can use the server certificates that you manage
+// with IAM, go to Working with Server Certificates (http://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_server-certs.html)
+// in the IAM User Guide.
+//
 // For information about the number of server certificates you can upload,
-// see Limitations on IAM Entities (http://docs.aws.amazon.com/IAM/latest/UserGuide/LimitationsOnEntities.html)
+// see Limitations on IAM Entities and Objects (http://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-limits.html)
 // in the IAM User Guide.
 //
 // Because the body of the public key certificate, private key, and the certificate
@@ -4117,7 +4139,7 @@ func (c *IAM) UploadServerCertificateRequest(input *UploadServerCertificateInput
 // For information about setting up signatures and authorization through the
 // API, go to Signing AWS API Requests (http://docs.aws.amazon.com/general/latest/gr/signing_aws_api_requests.html)
 // in the AWS General Reference. For general information about using the Query
-// API with IAM, go to Making Query Requests (http://docs.aws.amazon.com/IAM/latest/UserGuide/IAM_UsingQueryAPI.html)
+// API with IAM, go to Calling the API by Making HTTP Query Requests (http://docs.aws.amazon.com/IAM/latest/UserGuide/programming.html)
 // in the IAM User Guide.
 func (c *IAM) UploadServerCertificate(input *UploadServerCertificateInput) (*UploadServerCertificateOutput, error) {
 	req, out := c.UploadServerCertificateRequest(input)
@@ -4994,7 +5016,8 @@ func (s CreatePolicyVersionOutput) GoString() string {
 type CreateRoleInput struct {
 	_ struct{} `type:"structure"`
 
-	// The policy that grants an entity permission to assume the role.
+	// The trust relationship policy document that grants an entity permission to
+	// assume the role.
 	AssumeRolePolicyDocument *string `min:"1" type:"string" required:"true"`
 
 	// The path to the role. For more information about paths, see IAM Identifiers

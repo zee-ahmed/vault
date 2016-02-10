@@ -168,7 +168,7 @@ func TestBackend_RSARoles(t *testing.T) {
 		Backend: b,
 		Steps: []logicaltest.TestStep{
 			logicaltest.TestStep{
-				Operation: logical.WriteOperation,
+				Operation: logical.UpdateOperation,
 				Path:      "config/ca",
 				Data: map[string]interface{}{
 					"pem_bundle": rsaCAKey + rsaCACert,
@@ -211,7 +211,7 @@ func TestBackend_ECRoles(t *testing.T) {
 		Backend: b,
 		Steps: []logicaltest.TestStep{
 			logicaltest.TestStep{
-				Operation: logical.WriteOperation,
+				Operation: logical.UpdateOperation,
 				Path:      "config/ca",
 				Data: map[string]interface{}{
 					"pem_bundle": ecCAKey + ecCACert,
@@ -299,8 +299,12 @@ func checkCertsAndPrivateKey(keyType string, key crypto.Signer, usage certUsage,
 		}
 	}
 
-	if math.Abs(float64(time.Now().Unix()-cert.NotBefore.Unix())) > 10 {
+	// 40 seconds since we add 30 second slack for clock skew
+	if math.Abs(float64(time.Now().Unix()-cert.NotBefore.Unix())) > 40 {
 		return nil, fmt.Errorf("Validity period starts out of range")
+	}
+	if !cert.NotBefore.Before(time.Now().Add(-10 * time.Second)) {
+		return nil, fmt.Errorf("Validity period not far enough in the past")
 	}
 
 	if math.Abs(float64(time.Now().Add(validity).Unix()-cert.NotAfter.Unix())) > 10 {
@@ -340,7 +344,7 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 
 	ret := []logicaltest.TestStep{
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/generate/exported",
 			Data: map[string]interface{}{
 				"common_name": "Root Cert",
@@ -349,7 +353,7 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/urls",
 			Data: map[string]interface{}{
 				"issuing_certificates":    strings.Join(expected.IssuingCertificates, ","),
@@ -380,7 +384,7 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/sign-intermediate",
 			Data: map[string]interface{}{
 				"common_name": "Intermediate Cert",
@@ -450,7 +454,7 @@ func generateCSRSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 
 	ret := []logicaltest.TestStep{
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/generate/exported",
 			Data: map[string]interface{}{
 				"common_name":     "Root Cert",
@@ -460,7 +464,7 @@ func generateCSRSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/sign-intermediate",
 			Data: map[string]interface{}{
 				"use_csr_values": true,
@@ -471,7 +475,7 @@ func generateCSRSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/generate/exported",
 			Data: map[string]interface{}{
 				"common_name":     "Root Cert",
@@ -481,7 +485,7 @@ func generateCSRSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/sign-intermediate",
 			Data: map[string]interface{}{
 				"use_csr_values": true,
@@ -536,7 +540,7 @@ func generateCSRSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, intdata, reqdata map[string]interface{}) []logicaltest.TestStep {
 	ret := []logicaltest.TestStep{
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/ca",
 			Data: map[string]interface{}{
 				"pem_bundle": caKey + caCert,
@@ -544,7 +548,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/crl",
 			Data: map[string]interface{}{
 				"expiry": "16h",
@@ -614,7 +618,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		// Ensure that both parts of the PEM bundle are required
 		// Here, just the cert
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/ca",
 			Data: map[string]interface{}{
 				"pem_bundle": caCert,
@@ -624,7 +628,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// Here, just the key
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/ca",
 			Data: map[string]interface{}{
 				"pem_bundle": caKey,
@@ -683,7 +687,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// Test a bunch of generation stuff
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/generate/exported",
 			Data: map[string]interface{}{
 				"common_name": "Root Cert",
@@ -698,7 +702,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "intermediate/generate/exported",
 			Data: map[string]interface{}{
 				"common_name": "Intermediate Cert",
@@ -712,7 +716,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// Re-load the root key in so we can sign it
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/ca",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -726,7 +730,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/sign-intermediate",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -743,7 +747,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// First load in this way to populate the private key
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/ca",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -754,7 +758,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// Now test setting the intermediate, signed CA cert
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "intermediate/set-signed",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -764,7 +768,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "revoke",
 			Data:      reqdata,
 		},
@@ -794,7 +798,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// Do it all again, with EC keys and DER format
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/generate/exported",
 			Data: map[string]interface{}{
 				"common_name": "Root Cert",
@@ -822,7 +826,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "intermediate/generate/exported",
 			Data: map[string]interface{}{
 				"format":      "der",
@@ -848,7 +852,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/ca",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -862,7 +866,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "root/sign-intermediate",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -879,7 +883,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// First load in this way to populate the private key
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "config/ca",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -890,7 +894,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 
 		// Now test setting the intermediate, signed CA cert
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "intermediate/set-signed",
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
@@ -900,7 +904,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 		},
 
 		logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "revoke",
 			Data:      reqdata,
 		},
@@ -950,18 +954,18 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 	ret := []logicaltest.TestStep{}
 
 	roleTestStep := logicaltest.TestStep{
-		Operation: logical.WriteOperation,
+		Operation: logical.UpdateOperation,
 		Path:      "roles/test",
 	}
 	var issueTestStep logicaltest.TestStep
 	if useCSRs {
 		issueTestStep = logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "sign/test",
 		}
 	} else {
 		issueTestStep = logicaltest.TestStep{
-			Operation: logical.WriteOperation,
+			Operation: logical.UpdateOperation,
 			Path:      "issue/test",
 		}
 	}
@@ -1208,6 +1212,37 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 
 		roleTestStep.ErrorOk = false
 	}
+
+	// Listing test
+	ret = append(ret, logicaltest.TestStep{
+		Operation: logical.ListOperation,
+		Path:      "roles/",
+		Check: func(resp *logical.Response) error {
+			if resp.Data == nil {
+				return fmt.Errorf("nil data")
+			}
+
+			keysRaw, ok := resp.Data["keys"]
+			if !ok {
+				return fmt.Errorf("no keys found")
+			}
+
+			keys, ok := keysRaw.([]string)
+			if !ok {
+				return fmt.Errorf("could not convert keys to a string list")
+			}
+
+			if len(keys) != 1 {
+				return fmt.Errorf("unexpected keys length of %d", len(keys))
+			}
+
+			if keys[0] != "test" {
+				return fmt.Errorf("unexpected key value of %d", keys[0])
+			}
+
+			return nil
+		},
+	})
 
 	return ret
 }

@@ -20,7 +20,7 @@ func pathLogin(b *backend) *framework.Path {
 		},
 
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.WriteOperation: b.pathLogin,
+			logical.UpdateOperation: b.pathLogin,
 		},
 	}
 }
@@ -138,9 +138,8 @@ func (b *backend) pathLogin(
 			},
 			DisplayName: *user.Login,
 			LeaseOptions: logical.LeaseOptions{
-				TTL:         ttl,
-				GracePeriod: ttl / 10,
-				Renewable:   ttl > 0,
+				TTL:       ttl,
+				Renewable: true,
 			},
 		},
 	}, nil
@@ -152,5 +151,5 @@ func (b *backend) pathLoginRenew(
 	if err != nil {
 		return nil, err
 	}
-	return framework.LeaseExtend(config.MaxTTL, 0, false)(req, d)
+	return framework.LeaseExtend(config.TTL, config.MaxTTL, b.System())(req, d)
 }

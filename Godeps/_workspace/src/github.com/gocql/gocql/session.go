@@ -10,7 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,14 +38,46 @@ type Session struct {
 	schemaDescriber     *schemaDescriber
 	trace               Tracer
 	hostSource          *ringDescriber
-	mu                  sync.RWMutex
+	ring                ring
+	stmtsLRU            *preparedLRU
+
+	connCfg *ConnConfig
+
+	mu sync.RWMutex
 
 	control *controlConn
+
+	// event handlers
+	nodeEvents   *eventDeouncer
+	schemaEvents *eventDeouncer
+
+	// ring metadata
+	hosts []HostInfo
 
 	cfg ClusterConfig
 
 	closeMu  sync.RWMutex
 	isClosed bool
+}
+
+func addrsToHosts(addrs []string, defaultPort int) ([]*HostInfo, error) {
+	hosts := make([]*HostInfo, len(addrs))
+	for i, hostport := range addrs {
+		// TODO: remove duplication
+		addr, portStr, err := net.SplitHostPort(JoinHostPort(hostport, defaultPort))
+		if err != nil {
+			return nil, fmt.Errorf("NewSession: unable to parse hostport of addr %q: %v", hostport, err)
+		}
+
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("NewSession: invalid port for hostport of addr %q: %v", hostport, err)
+		}
+
+		hosts[i] = &HostInfo{peer: addr, port: port, state: NodeUp}
+	}
+
+	return hosts, nil
 }
 
 // NewSession wraps an existing Node.
@@ -54,61 +87,77 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 		return nil, ErrNoHosts
 	}
 
-	//Adjust the size of the prepared statements cache to match the latest configuration
-	stmtsLRU.Lock()
-	initStmtsLRU(cfg.MaxPreparedStmts)
-	stmtsLRU.Unlock()
-
 	s := &Session{
 		cons:     cfg.Consistency,
 		prefetch: 0.25,
 		cfg:      cfg,
 		pageSize: cfg.PageSize,
+		stmtsLRU: &preparedLRU{lru: lru.New(cfg.MaxPreparedStmts)},
 	}
 
-	pool, err := cfg.PoolConfig.buildPool(s)
+	connCfg, err := connConfig(s)
 	if err != nil {
-		return nil, err
-	}
-	s.pool = pool
-
-	// See if there are any connections in the pool
-	if pool.Size() == 0 {
 		s.Close()
-		return nil, ErrNoConnectionsStarted
+		return nil, fmt.Errorf("gocql: unable to create session: %v", err)
 	}
+	s.connCfg = connCfg
+
+	s.nodeEvents = newEventDeouncer("NodeEvents", s.handleNodeEvent)
+	s.schemaEvents = newEventDeouncer("SchemaEvents", s.handleSchemaEvent)
 
 	s.routingKeyInfoCache.lru = lru.New(cfg.MaxRoutingKeyInfo)
 
 	// I think it might be a good idea to simplify this and make it always discover
 	// hosts, maybe with more filters.
-	if cfg.DiscoverHosts {
-		s.hostSource = &ringDescriber{
-			session:    s,
-			dcFilter:   cfg.Discovery.DcFilter,
-			rackFilter: cfg.Discovery.RackFilter,
-			closeChan:  make(chan bool),
-		}
+	s.hostSource = &ringDescriber{
+		session:   s,
+		closeChan: make(chan bool),
 	}
+
+	s.pool = cfg.PoolConfig.buildPool(s)
+
+	var hosts []*HostInfo
 
 	if !cfg.disableControlConn {
 		s.control = createControlConn(s)
-		s.control.reconnect(false)
+		if err := s.control.connect(cfg.Hosts); err != nil {
+			s.Close()
+			return nil, err
+		}
 
-		// need to setup host source to check for rpc_address in system.local
-		localHasRPCAddr, err := checkSystemLocal(s.control)
+		// need to setup host source to check for broadcast_address in system.local
+		localHasRPCAddr, _ := checkSystemLocal(s.control)
+		s.hostSource.localHasRpcAddr = localHasRPCAddr
+
+		var err error
+		if cfg.DisableInitialHostLookup {
+			// TODO: we could look at system.local to get token and other metadata
+			// in this case.
+			hosts, err = addrsToHosts(cfg.Hosts, cfg.Port)
+		} else {
+			hosts, _, err = s.hostSource.GetHosts()
+		}
+
 		if err != nil {
-			log.Printf("gocql: unable to verify if system.local table contains rpc_address, falling back to connection address: %v", err)
+			s.Close()
+			return nil, err
 		}
-
-		if cfg.DiscoverHosts {
-			s.hostSource.localHasRpcAddr = localHasRPCAddr
-		}
+	} else {
+		// we dont get host info
+		hosts, err = addrsToHosts(cfg.Hosts, cfg.Port)
 	}
 
-	if cfg.DiscoverHosts {
-		s.hostSource.refreshRing()
-		go s.hostSource.run(cfg.Discovery.Sleep)
+	for _, host := range hosts {
+		s.ring.addHost(host)
+		s.handleNodeUp(net.ParseIP(host.Peer()), host.Port(), false)
+	}
+
+	// TODO(zariel): we probably dont need this any more as we verify that we
+	// can connect to one of the endpoints supplied by using the control conn.
+	// See if there are any connections in the pool
+	if s.pool.Size() == 0 {
+		s.Close()
+		return nil, ErrNoConnectionsStarted
 	}
 
 	return s, nil
@@ -206,6 +255,10 @@ func (s *Session) Close() {
 	if s.control != nil {
 		s.control.close()
 	}
+
+	if s.nodeEvents != nil {
+		s.nodeEvents.stop()
+	}
 }
 
 func (s *Session) Closed() bool {
@@ -228,6 +281,7 @@ func (s *Session) executeQuery(qry *Query) *Iter {
 	for {
 		host, conn := s.pool.Pick(qry)
 
+		qry.attempts++
 		//Assign the error unavailable to the iterator
 		if conn == nil {
 			if qry.rt == nil || !qry.rt.Attempt(qry) {
@@ -241,16 +295,14 @@ func (s *Session) executeQuery(qry *Query) *Iter {
 		t := time.Now()
 		iter = conn.executeQuery(qry)
 		qry.totalLatency += time.Now().Sub(t).Nanoseconds()
-		qry.attempts++
 
-		//Exit for loop if the query was successful
+		// Update host
+		host.Mark(iter.err)
+
+		// Exit for loop if the query was successful
 		if iter.err == nil {
-			host.Mark(iter.err)
 			break
 		}
-
-		// Mark host as ok
-		host.Mark(nil)
 
 		if qry.rt == nil || !qry.rt.Attempt(qry) {
 			break
@@ -313,7 +365,7 @@ func (s *Session) routingKeyInfo(stmt string) (*routingKeyInfo, error) {
 	s.routingKeyInfoCache.mu.Unlock()
 
 	var (
-		info         *QueryInfo
+		info         *preparedStatment
 		partitionKey []*ColumnMetadata
 	)
 
@@ -338,13 +390,13 @@ func (s *Session) routingKeyInfo(stmt string) (*routingKeyInfo, error) {
 	// Mark host as OK
 	host.Mark(nil)
 
-	if len(info.Args) == 0 {
+	if info.request.colCount == 0 {
 		// no arguments, no routing key, and no error
 		return nil, nil
 	}
 
 	// get the table metadata
-	table := info.Args[0].Table
+	table := info.request.columns[0].Table
 
 	var keyspaceMetadata *KeyspaceMetadata
 	keyspaceMetadata, inflight.err = s.KeyspaceMetadata(s.cfg.Keyspace)
@@ -377,7 +429,7 @@ func (s *Session) routingKeyInfo(stmt string) (*routingKeyInfo, error) {
 		routingKeyInfo.indexes[keyIndex] = -1
 
 		// find the column in the query info
-		for argIndex, boundColumn := range info.Args {
+		for argIndex, boundColumn := range info.request.columns {
 			if keyColumn.Name == boundColumn.Name {
 				// there may be many such bound columns, pick the first
 				routingKeyInfo.indexes[keyIndex] = argIndex
@@ -399,100 +451,113 @@ func (s *Session) routingKeyInfo(stmt string) (*routingKeyInfo, error) {
 	return routingKeyInfo, nil
 }
 
-func (s *Session) executeBatch(batch *Batch) (*Iter, error) {
+func (s *Session) executeBatch(batch *Batch) *Iter {
 	// fail fast
 	if s.Closed() {
-		return nil, ErrSessionClosed
+		return &Iter{err: ErrSessionClosed}
 	}
 
 	// Prevent the execution of the batch if greater than the limit
 	// Currently batches have a limit of 65536 queries.
 	// https://datastax-oss.atlassian.net/browse/JAVA-229
 	if batch.Size() > BatchSizeMaximum {
-		return nil, ErrTooManyStmts
+		return &Iter{err: ErrTooManyStmts}
 	}
 
-	var err error
 	var iter *Iter
 	batch.attempts = 0
 	batch.totalLatency = 0
 	for {
 		host, conn := s.pool.Pick(nil)
 
-		//Assign the error unavailable and break loop
-		if conn == nil {
-			err = ErrNoConnections
-			break
-		}
-		t := time.Now()
-		iter, err = conn.executeBatch(batch)
-		batch.totalLatency += time.Now().Sub(t).Nanoseconds()
 		batch.attempts++
-		//Exit loop if operation executed correctly
-		if err == nil {
-			host.Mark(err)
-			return iter, err
+		if conn == nil {
+			if batch.rt == nil || !batch.rt.Attempt(batch) {
+				// Assign the error unavailable and break loop
+				iter = &Iter{err: ErrNoConnections}
+				break
+			}
+
+			continue
 		}
 
-		// Mark host as OK
-		host.Mark(nil)
+		if conn == nil {
+			iter = &Iter{err: ErrNoConnections}
+			break
+		}
+
+		t := time.Now()
+
+		iter = conn.executeBatch(batch)
+
+		batch.totalLatency += time.Since(t).Nanoseconds()
+		// Exit loop if operation executed correctly
+		if iter.err == nil {
+			host.Mark(nil)
+			break
+		}
+
+		// Mark host with error if returned from Close
+		host.Mark(iter.Close())
 
 		if batch.rt == nil || !batch.rt.Attempt(batch) {
 			break
 		}
 	}
 
-	return nil, err
+	return iter
 }
 
 // ExecuteBatch executes a batch operation and returns nil if successful
 // otherwise an error is returned describing the failure.
 func (s *Session) ExecuteBatch(batch *Batch) error {
-	_, err := s.executeBatch(batch)
-	return err
+	iter := s.executeBatch(batch)
+	return iter.Close()
 }
 
-// ExecuteBatchCAS executes a batch operation and returns nil if successful and
+// ExecuteBatchCAS executes a batch operation and returns true if successful and
 // an iterator (to scan aditional rows if more than one conditional statement)
-// was sent, otherwise an error is returned describing the failure.
+// was sent.
 // Further scans on the interator must also remember to include
 // the applied boolean as the first argument to *Iter.Scan
 func (s *Session) ExecuteBatchCAS(batch *Batch, dest ...interface{}) (applied bool, iter *Iter, err error) {
-	if iter, err := s.executeBatch(batch); err == nil {
-		if err := iter.checkErrAndNotFound(); err != nil {
-			return false, nil, err
-		}
-		if len(iter.Columns()) > 1 {
-			dest = append([]interface{}{&applied}, dest...)
-			iter.Scan(dest...)
-		} else {
-			iter.Scan(&applied)
-		}
-		return applied, iter, nil
-	} else {
+	iter = s.executeBatch(batch)
+	if err := iter.checkErrAndNotFound(); err != nil {
+		iter.Close()
 		return false, nil, err
 	}
+
+	if len(iter.Columns()) > 1 {
+		dest = append([]interface{}{&applied}, dest...)
+		iter.Scan(dest...)
+	} else {
+		iter.Scan(&applied)
+	}
+
+	return applied, iter, nil
 }
 
 // MapExecuteBatchCAS executes a batch operation much like ExecuteBatchCAS,
 // however it accepts a map rather than a list of arguments for the initial
 // scan.
 func (s *Session) MapExecuteBatchCAS(batch *Batch, dest map[string]interface{}) (applied bool, iter *Iter, err error) {
-	if iter, err := s.executeBatch(batch); err == nil {
-		if err := iter.checkErrAndNotFound(); err != nil {
-			return false, nil, err
-		}
-		iter.MapScan(dest)
-		applied = dest["[applied]"].(bool)
-		delete(dest, "[applied]")
-
-		// we usually close here, but instead of closing, just returin an error
-		// if MapScan failed. Although Close just returns err, using Close
-		// here might be confusing as we are not actually closing the iter
-		return applied, iter, iter.err
-	} else {
+	iter = s.executeBatch(batch)
+	if err := iter.checkErrAndNotFound(); err != nil {
+		iter.Close()
 		return false, nil, err
 	}
+	iter.MapScan(dest)
+	applied = dest["[applied]"].(bool)
+	delete(dest, "[applied]")
+
+	// we usually close here, but instead of closing, just returin an error
+	// if MapScan failed. Although Close just returns err, using Close
+	// here might be confusing as we are not actually closing the iter
+	return applied, iter, iter.err
+}
+
+func (s *Session) connect(addr string, errorHandler ConnErrorHandler) (*Conn, error) {
+	return Connect(addr, s.connCfg, errorHandler, s)
 }
 
 // Query represents a CQL statement that can be executed.
@@ -513,6 +578,7 @@ type Query struct {
 	totalLatency     int64
 	serialCons       SerialConsistency
 	defaultTimestamp bool
+	isCAS            bool
 
 	disableAutoPage bool
 }
@@ -707,7 +773,7 @@ func (q *Query) PageState(state []byte) *Query {
 // Exec executes the query without returning any rows.
 func (q *Query) Exec() error {
 	iter := q.Iter()
-	return iter.err
+	return iter.Close()
 }
 
 func isUseStatement(stmt string) bool {
@@ -756,6 +822,7 @@ func (q *Query) Scan(dest ...interface{}) error {
 // the existing values did not match, the previous values will be stored
 // in dest.
 func (q *Query) ScanCAS(dest ...interface{}) (applied bool, err error) {
+	q.isCAS = true
 	iter := q.Iter()
 	if err := iter.checkErrAndNotFound(); err != nil {
 		return false, err
@@ -778,6 +845,7 @@ func (q *Query) ScanCAS(dest ...interface{}) (applied bool, err error) {
 // SELECT * FROM. So using ScanCAS with INSERT is inherently prone to
 // column mismatching. MapScanCAS is added to capture them safely.
 func (q *Query) MapScanCAS(dest map[string]interface{}) (applied bool, err error) {
+	q.isCAS = true
 	iter := q.Iter()
 	if err := iter.checkErrAndNotFound(); err != nil {
 		return false, err
@@ -798,9 +866,15 @@ type Iter struct {
 	rows [][][]byte
 	meta resultMetadata
 	next *nextIter
+	host *HostInfo
 
 	framer *framer
 	once   sync.Once
+}
+
+// Host returns the host which the query was sent to.
+func (iter *Iter) Host() *HostInfo {
+	return iter.host
 }
 
 // Columns returns the name and type of the selected columns.
@@ -834,7 +908,7 @@ func (iter *Iter) Scan(dest ...interface{}) bool {
 	// currently only support scanning into an expand tuple, such that its the same
 	// as scanning in more values from a single column
 	if len(dest) != iter.meta.actualColCount {
-		iter.err = errors.New("count mismatch")
+		iter.err = fmt.Errorf("gocql: not enough columns to scan into: have %d want %d", len(dest), iter.meta.actualColCount)
 		return false
 	}
 

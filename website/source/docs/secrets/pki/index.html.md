@@ -741,8 +741,10 @@ subpath for interactive help output.
       <li>
       <span class="param">format</span>
       <span class="param-flags">optional</span>
-        Format for returned data. Can be `pem` or `der`; defaults to `pem`. If
-        `der`, the output is base64 encoded.
+        Format for returned data. Can be `pem`, `der`, or `pem_bundle`;
+        defaults to `pem`. If `der`, the output is base64 encoded. If
+        `pem_bundle`, the `csr` field will contain the private key (if
+        exported) and CSR, concatenated.
       </li>
       <li>
         <span class="param">key_type</span>
@@ -860,8 +862,10 @@ subpath for interactive help output.
       <li>
       <span class="param">format</span>
       <span class="param-flags">optional</span>
-        Format for returned data. Can be `pem` or `der`; defaults to `pem`. If
-        `der`, the output is base64 encoded.
+        Format for returned data. Can be `pem`, `der`, or `pem_bundle`;
+        defaults to `pem`. If `der`, the output is base64 encoded. If
+        `pem_bundle`, the `certificate` field will contain the private key,
+        certificate, and issuing CA, concatenated.
       </li>
     </ul>
   </dd>
@@ -1117,6 +1121,44 @@ subpath for interactive help output.
   </dd>
 </dl>
 
+#### LIST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+    Returns a list of available roles. Only the role names are returned, not
+    any values.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>GET</dd>
+
+  <dt>URL</dt>
+  <dd>`/roles/?list=true`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+     None
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+
+  ```javascript
+  {
+    "auth": null,
+    "data": {
+      "keys": ["dev", "prod"]
+    },
+    "lease_duration": 2592000,
+    "lease_id": "",
+    "renewable": false
+  }
+  ```
+
+  </dd>
+</dl>
+
 #### DELETE
 
 <dl class="api">
@@ -1195,8 +1237,10 @@ subpath for interactive help output.
       <li>
       <span class="param">format</span>
       <span class="param-flags">optional</span>
-        Format for returned data. Can be `pem` or `der`; defaults to `pem`. If
-        `der`, the output is base64 encoded.
+        Format for returned data. Can be `pem`, `der`, or `pem_bundle`;
+        defaults to `pem`. If `der`, the output is base64 encoded. If
+        `pem_bundle`, the `certificate` field will contain the private key (if exported),
+        certificate, and issuing CA, concatenated.
       </li>
       <li>
         <span class="param">key_type</span>
@@ -1264,11 +1308,11 @@ subpath for interactive help output.
   <dd>
     <ul>
       <li>
-      <li>
         <span class="param">csr</span>
         <span class="param-flags">required</span>
         The PEM-encoded CSR.
       </li>
+      <li>
         <span class="param">common_name</span>
         <span class="param-flags">required</span>
         The requested CN for the certificate.
@@ -1295,8 +1339,10 @@ subpath for interactive help output.
       <li>
       <span class="param">format</span>
       <span class="param-flags">optional</span>
-        Format for returned data. Can be `pem` or `der`; defaults to `pem`. If
-        `der`, the output is base64 encoded.
+        Format for returned data. Can be `pem`, `der`, or `pem_bundle`;
+        defaults to `pem`. If `der`, the output is base64 encoded. If
+        `pem_bundle`, the `certificate` field will contain the certificate and
+        issuing CA, concatenated.
       </li>
       <li>
         <span class="param">max_path_length</span>
@@ -1397,8 +1443,10 @@ subpath for interactive help output.
       <li>
       <span class="param">format</span>
       <span class="param-flags">optional</span>
-        Format for returned data. Can be `pem` or `der`; defaults to `pem`. If
-        `der`, the output is base64 encoded.
+        Format for returned data. Can be `pem`, `der`, or `pem_bundle`;
+        defaults to `pem`. If `der`, the output is base64 encoded. If
+        `pem_bundle`, the `certificate` field will contain the certificate and
+        issuing CA, concatenated.
       </li>
     </ul>
   </dd>
@@ -1461,8 +1509,10 @@ subpath for interactive help output.
       <li>
       <span class="param">format</span>
       <span class="param-flags">optional</span>
-        Format for returned data. Can be `pem` or `der`; defaults to `pem`. If
-        `der`, the output is base64 encoded.
+        Format for returned data. Can be `pem`, `der`, or `pem_bundle`;
+        defaults to `pem`. If `der`, the output is base64 encoded. If
+        `pem_bundle`, the `certificate` field will contain the certificate and
+        issuing CA, concatenated.
       </li>
     </ul>
   </dd>
