@@ -119,6 +119,14 @@ If you are using issued certificates for client authentication to Vault, note
 that as of 0.4, the `cert` authentication endpoint supports being pushed CRLs,
 but it cannot read CRLs directly from this backend.
 
+### Safe Minimums
+
+Since its inception, this backend has enforced SHA256 for signature hashes
+rather than SHA1. As of 0.5.1, a minimum of 2048 bits for RSA keys is also
+enforced. Software that can handle SHA256 signatures should also be able to
+handle 2048-bit keys, and 1024-bit keys are considered unsafe and are
+disallowed in the Internet PKI.
+
 ## Quick Start
 
 #### Mount the backend
@@ -227,7 +235,7 @@ Success! Data written to: pki/ca/urls
 #### Configure a role
 
 The next step is to configure a role. A role is a logical name that maps to a
-policy used to generated those credentials. For example, let's create an
+policy used to generate those credentials. For example, let's create an
 "example-dot-com" role:
 
 ```text
@@ -770,7 +778,10 @@ subpath for interactive help output.
       "lease_duration": 21600,
       "data": {
         "csr": "-----BEGIN CERTIFICATE REQUEST-----\nMIIDzDCCAragAwIBAgIUOd0ukLcjH43TfTHFG9qE0FtlMVgwCwYJKoZIhvcNAQEL\n...\numkqeYeO30g1uYvDuWLXVA==\n-----END CERTIFICATE REQUEST-----\n",
+        "private_key": "-----BEGIN RSA PRIVATE KEY-----\\nMIIEpAIBAAKCAQEAwsANtGz9gS3o5SwTSlOG1l-----END RSA PRIVATE KEY-----",
+        "private_key_type": "rsa"
         },
+      "warnings": null,
       "auth": null
     }
     ```
@@ -882,8 +893,10 @@ subpath for interactive help output.
         "certificate": "-----BEGIN CERTIFICATE-----\nMIIDzDCCAragAwIBAgIUOd0ukLcjH43TfTHFG9qE0FtlMVgwCwYJKoZIhvcNAQEL\n...\numkqeYeO30g1uYvDuWLXVA==\n-----END CERTIFICATE-----\n",
         "issuing_ca": "-----BEGIN CERTIFICATE-----\nMIIDUTCCAjmgAwIBAgIJAKM+z4MSfw2mMA0GCSqGSIb3DQEBCwUAMBsxGTAXBgNV\n...\nG/7g4koczXLoUM3OQXd5Aq2cs4SS1vODrYmgbioFsQ3eDHd1fg==\n-----END CERTIFICATE-----\n",
         "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAnVHfwoKsUG1GDVyWB1AFroaKl2ImMBO8EnvGLRrmobIkQvh+\n...\nQN351pgTphi6nlCkGPzkDuwvtxSxiCWXQcaxrHAL7MiJpPzkIBq1\n-----END RSA PRIVATE KEY-----\n",
-        "serial": "39:dd:2e:90:b7:23:1f:8d:d3:7d:31:c5:1b:da:84:d0:5b:65:31:58"
+        "private_key_type": "rsa",
+        "serial_number": "39:dd:2e:90:b7:23:1f:8d:d3:7d:31:c5:1b:da:84:d0:5b:65:31:58"
         },
+      "warnings": "",  
       "auth": null
     }
     ```
@@ -1534,5 +1547,55 @@ subpath for interactive help output.
     }
     ```
 
+  </dd>
+</dl>
+
+### /pki/tidy
+#### POST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+    Allows tidying up the backend storage and/or CRL by removing certificates
+    that have expired and are past a certain buffer period beyond their
+    expiration time.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>POST</dd>
+
+  <dt>URL</dt>
+  <dd>`/pki/tidy`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+    <ul>
+      <li>
+        <span class="param">tidy_cert_store</span>
+        <span class="param-flags">optional</span>
+        Whether to tidy up the certificate store. Defaults to `false`.
+      </li>
+      <li>
+      <span class="param">tidy_revocation_list</span>
+      <span class="param-flags">optional</span>
+        Whether to tidy up the revocation list (CRL). Defaults to `false`.
+      </li>
+      <li>
+      <span class="param">safety_buffer</span>
+      <span class="param-flags">optional</span>
+        A duration (given as an integer number of seconds or a string; defaults
+        to `72h`) used as a safety buffer to ensure certificates are not
+        expunged prematurely; as an example, this can keep certificates from
+        being removed from the CRL that, due to clock skew, might still be
+        considered valid on other hosts. For a certificate to be expunged, the
+        time must be after the expiration time of the certificate (according to
+        the local clock) plus the duration of `safety_buffer`.
+      </li>
+    </ul>
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+    A `204` status code.
   </dd>
 </dl>

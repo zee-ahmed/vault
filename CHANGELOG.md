@@ -1,3 +1,68 @@
+## 0.5.1 (February 25th, 2016)
+
+DEPRECATIONS/BREAKING CHANGES:
+
+ * RSA keys less than 2048 bits are no longer supported in the PKI backend.
+   1024-bit keys are considered unsafe and are disallowed in the Internet PKI.
+   The `pki` backend has enforced SHA256 hashes in signatures from the
+   beginning, and software that can handle these hashes should be able to
+   handle larger key sizes. [GH-1095]
+ * The PKI backend now does not automatically delete expired certificates,
+   including from the CRL. Doing so could lead to a situation where a time
+   mismatch between the Vault server and clients could result in a certificate
+   that would not be considered expired by a client being removed from the CRL.
+   The new `pki/tidy` endpoint can be used to trigger expirations. [GH-1129]
+
+FEATURES:
+
+ * **Codebase Audit**: Vault's 0.5 codebase was audited by iSEC. (The terms of
+   the audit contract do not allow us to make the results public.) [GH-220]
+
+IMPROVEMENTS:
+
+ * api: The `VAULT_TLS_SERVER_NAME` environment variable can be used to control
+   the SNI header during TLS connections [GH-1131]
+ * api/health: Add the server's time in UTC to health responses [GH-1117]
+ * command/rekey and command/generate-root: These now return the status at
+   attempt initialization time, rather than requiring a separate fetch for the
+   nonce [GH-1054] 
+ * credential/cert: Don't require root/sudo tokens for the `certs/` and `crls/`
+   paths; use normal ACL behavior instead [GH-468]
+ * credential/github: The validity of the token used for login will be checked
+   at renewal time [GH-1047]
+ * credential/github: The `config` endpoint no longer requires a root token;
+   normal ACL path matching applies
+ * deps: Use the standardized Go 1.6 vendoring system
+ * secret/aws: Inform users of AWS-imposed policy restrictions around STS
+   tokens if they attempt to use an invalid policy [GH-1113]
+ * secret/mysql: While configuring mysql backend, avoid verification of 
+   connection_url by disabling it using verify_connection option [GH-1096]
+ * secret/pki: Submitted CSRs are now verified to have the correct key type and
+   minimum number of bits according to the role. The exception is intermediate
+   CA signing and the `sign-verbatim` path [GH-1104]
+ * secret/pki: New `tidy` endpoint to allow expunging expired certificates.
+   [GH-1129]
+ * secret/postgresql: While configuring mysql backend, avoid verification of 
+   connection_url by disabling it using verify_connection option [GH-1096]
+ * secret/ssh: When verifying an OTP, return 400 if it is not valid instead of
+   204 [GH-1086]
+ * credential/app-id: App ID backend will check the validity of app-id and user-id
+   during renewal time [GH-1039]
+ * credential/cert: TLS Certificates backend, during renewal, will now match the
+   client identity with the client identity used during login [GH-1127]
+
+BUG FIXES:
+
+ * credential/ldap: Properly escape values being provided to search filters
+   [GH-1100]
+ * secret/aws: Capping on length of usernames for both IAM and STS types
+   [GH-1102]
+ * secret/pki: If a cert is not found during lookup of a serial number,
+   respond with a 400 rather than a 500 [GH-1085]
+ * secret/postgresql: Add extra revocation statements to better handle more
+   permission scenarios [GH-1053]
+ * secret/postgresql: Make connection_url work properly [GH-1112]
+
 ## 0.5.0 (February 10, 2016)
 
 SECURITY:

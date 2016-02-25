@@ -19,12 +19,10 @@ GIT_DIRTY=$(test -n "`git status --porcelain`" && echo "+CHANGES" || true)
 XC_ARCH=${XC_ARCH:-"386 amd64 arm"}
 XC_OS=${XC_OS:-linux darwin windows freebsd openbsd}
 
-# Store the original GOPATH so we can move the binary to it later
-ORIGINAL_GOPATH=${GOPATH:-$(go env GOPATH)}
-GOPATH="$(godep path):$ORIGINAL_GOPATH"
+GOPATH=${GOPATH:-$(go env GOPATH)}
 case $(uname) in
     CYGWIN*)
-        ORIGINAL_GOPATH="$(cygpath $ORIGINAL_GOPATH)"
+        GOPATH="$(cygpath $GOPATH)"
         ;;
 esac
 
@@ -35,7 +33,7 @@ rm -rf pkg/*
 mkdir -p bin/
 
 # If its dev mode, only build for ourself
-if [ "${TF_DEV}x" != "x" ]; then
+if [ "${VAULT_DEV_BUILD}x" != "x" ]; then
     XC_OS=$(go env GOOS)
     XC_ARCH=$(go env GOARCH)
 fi
@@ -53,7 +51,7 @@ gox \
 
 # Move all the compiled things to the $GOPATH/bin
 OLDIFS=$IFS
-IFS=: MAIN_GOPATH=($ORIGINAL_GOPATH)
+IFS=: MAIN_GOPATH=($GOPATH)
 IFS=$OLDIFS
 
 # Copy our OS/Arch to the bin/ directory
@@ -63,7 +61,7 @@ for F in $(find ${DEV_PLATFORM} -mindepth 1 -maxdepth 1 -type f); do
     cp ${F} ${MAIN_GOPATH}/bin/
 done
 
-if [ "${TF_DEV}x" = "x" ]; then
+if [ "${VAULT_DEV_BUILD}x" = "x" ]; then
     # Zip and copy to the dist dir
     echo "==> Packaging..."
     for PLATFORM in $(find ./pkg -mindepth 1 -maxdepth 1 -type d); do

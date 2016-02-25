@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,8 @@ import (
 )
 
 var (
-	stepCount = 0
+	stepCount       = 0
+	serialUnderTest string
 )
 
 // Performs basic tests on CA functionality
@@ -52,7 +54,7 @@ func TestBackend_RSAKey(t *testing.T) {
 		Steps:   []logicaltest.TestStep{},
 	}
 
-	stepCount += len(testCase.Steps)
+	stepCount = len(testCase.Steps)
 
 	intdata := map[string]interface{}{}
 	reqdata := map[string]interface{}{}
@@ -82,7 +84,7 @@ func TestBackend_ECKey(t *testing.T) {
 		Steps:   []logicaltest.TestStep{},
 	}
 
-	stepCount += len(testCase.Steps)
+	stepCount = len(testCase.Steps)
 
 	intdata := map[string]interface{}{}
 	reqdata := map[string]interface{}{}
@@ -110,7 +112,7 @@ func TestBackend_CSRValues(t *testing.T) {
 		Steps:   []logicaltest.TestStep{},
 	}
 
-	stepCount += len(testCase.Steps)
+	stepCount = len(testCase.Steps)
 
 	intdata := map[string]interface{}{}
 	reqdata := map[string]interface{}{}
@@ -138,7 +140,7 @@ func TestBackend_URLsCRUD(t *testing.T) {
 		Steps:   []logicaltest.TestStep{},
 	}
 
-	stepCount += len(testCase.Steps)
+	stepCount = len(testCase.Steps)
 
 	intdata := map[string]interface{}{}
 	reqdata := map[string]interface{}{}
@@ -177,15 +179,56 @@ func TestBackend_RSARoles(t *testing.T) {
 		},
 	}
 
+	stepCount = len(testCase.Steps)
+
 	testCase.Steps = append(testCase.Steps, generateRoleSteps(t, false)...)
-	testCase.Steps = append(testCase.Steps, generateRoleSteps(t, true)...)
 	if len(os.Getenv("VAULT_VERBOSE_PKITESTS")) > 0 {
 		for i, v := range testCase.Steps {
 			fmt.Printf("Step %d:\n%+v\n\n", i+stepCount, v)
 		}
 	}
 
-	stepCount += len(testCase.Steps)
+	logicaltest.Test(t, testCase)
+}
+
+// Generates and tests steps that walk through the various possibilities
+// of role flags to ensure that they are properly restricted
+// Uses the RSA CA key
+func TestBackend_RSARoles_CSR(t *testing.T) {
+	defaultLeaseTTLVal := time.Hour * 24
+	maxLeaseTTLVal := time.Hour * 24 * 30
+	b, err := Factory(&logical.BackendConfig{
+		Logger: nil,
+		System: &logical.StaticSystemView{
+			DefaultLeaseTTLVal: defaultLeaseTTLVal,
+			MaxLeaseTTLVal:     maxLeaseTTLVal,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Unable to create backend: %s", err)
+	}
+
+	testCase := logicaltest.TestCase{
+		Backend: b,
+		Steps: []logicaltest.TestStep{
+			logicaltest.TestStep{
+				Operation: logical.UpdateOperation,
+				Path:      "config/ca",
+				Data: map[string]interface{}{
+					"pem_bundle": rsaCAKey + rsaCACert,
+				},
+			},
+		},
+	}
+
+	stepCount = len(testCase.Steps)
+
+	testCase.Steps = append(testCase.Steps, generateRoleSteps(t, false)...)
+	if len(os.Getenv("VAULT_VERBOSE_PKITESTS")) > 0 {
+		for i, v := range testCase.Steps {
+			fmt.Printf("Step %d:\n%+v\n\n", i+stepCount, v)
+		}
+	}
 
 	logicaltest.Test(t, testCase)
 }
@@ -220,15 +263,56 @@ func TestBackend_ECRoles(t *testing.T) {
 		},
 	}
 
+	stepCount = len(testCase.Steps)
+
 	testCase.Steps = append(testCase.Steps, generateRoleSteps(t, false)...)
-	testCase.Steps = append(testCase.Steps, generateRoleSteps(t, true)...)
 	if len(os.Getenv("VAULT_VERBOSE_PKITESTS")) > 0 {
 		for i, v := range testCase.Steps {
 			fmt.Printf("Step %d:\n%+v\n\n", i+stepCount, v)
 		}
 	}
 
-	stepCount += len(testCase.Steps)
+	logicaltest.Test(t, testCase)
+}
+
+// Generates and tests steps that walk through the various possibilities
+// of role flags to ensure that they are properly restricted
+// Uses the EC CA key
+func TestBackend_ECRoles_CSR(t *testing.T) {
+	defaultLeaseTTLVal := time.Hour * 24
+	maxLeaseTTLVal := time.Hour * 24 * 30
+	b, err := Factory(&logical.BackendConfig{
+		Logger: nil,
+		System: &logical.StaticSystemView{
+			DefaultLeaseTTLVal: defaultLeaseTTLVal,
+			MaxLeaseTTLVal:     maxLeaseTTLVal,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Unable to create backend: %s", err)
+	}
+
+	testCase := logicaltest.TestCase{
+		Backend: b,
+		Steps: []logicaltest.TestStep{
+			logicaltest.TestStep{
+				Operation: logical.UpdateOperation,
+				Path:      "config/ca",
+				Data: map[string]interface{}{
+					"pem_bundle": ecCAKey + ecCACert,
+				},
+			},
+		},
+	}
+
+	stepCount = len(testCase.Steps)
+
+	testCase.Steps = append(testCase.Steps, generateRoleSteps(t, true)...)
+	if len(os.Getenv("VAULT_VERBOSE_PKITESTS")) > 0 {
+		for i, v := range testCase.Steps {
+			fmt.Printf("Step %d:\n%+v\n\n", i+stepCount, v)
+		}
+	}
 
 	logicaltest.Test(t, testCase)
 }
@@ -335,11 +419,18 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 		},
 	}
 
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	csr, _ := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv)
-	csrPem := pem.EncodeToMemory(&pem.Block{
+	priv1024, _ := rsa.GenerateKey(rand.Reader, 1024)
+	csr1024, _ := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv1024)
+	csrPem1024 := pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE REQUEST",
-		Bytes: csr,
+		Bytes: csr1024,
+	})
+
+	priv2048, _ := rsa.GenerateKey(rand.Reader, 2048)
+	csr2048, _ := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, priv2048)
+	csrPem2048 := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: csr2048,
 	})
 
 	ret := []logicaltest.TestStep{
@@ -388,7 +479,28 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 			Path:      "root/sign-intermediate",
 			Data: map[string]interface{}{
 				"common_name": "Intermediate Cert",
-				"csr":         string(csrPem),
+				"csr":         string(csrPem1024),
+				"format":      "der",
+			},
+			ErrorOk: true,
+			Check: func(resp *logical.Response) error {
+				if !resp.IsError() {
+					return fmt.Errorf("expected an error response but did not get one")
+				}
+				if !strings.Contains(resp.Data["error"].(string), "2048") {
+					return fmt.Errorf("recieved an error but not about a 1024-bit key, error was: %s", resp.Data["error"].(string))
+				}
+
+				return nil
+			},
+		},
+
+		logicaltest.TestStep{
+			Operation: logical.UpdateOperation,
+			Path:      "root/sign-intermediate",
+			Data: map[string]interface{}{
+				"common_name": "Intermediate Cert",
+				"csr":         string(csrPem2048),
 				"format":      "der",
 			},
 			Check: func(resp *logical.Response) error {
@@ -414,6 +526,7 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 				case !reflect.DeepEqual(expected.OCSPServers, cert.OCSPServer):
 					return fmt.Errorf("expected\n%#v\ngot\n%#v\n", expected.OCSPServers, cert.OCSPServer)
 				}
+
 				return nil
 			},
 		},
@@ -538,6 +651,11 @@ func generateCSRSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 // Generates steps to test out CA configuration -- certificates + CRL expiry,
 // and ensure that the certificates are readable after storing them
 func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, intdata, reqdata map[string]interface{}) []logicaltest.TestStep {
+	setSerialUnderTest := func(req *logical.Request) error {
+		req.Path = serialUnderTest
+		return nil
+	}
+
 	ret := []logicaltest.TestStep{
 		logicaltest.TestStep{
 			Operation: logical.UpdateOperation,
@@ -724,7 +842,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 				delete(reqdata, "ttl")
 				reqdata["csr"] = intdata["intermediatecsr"].(string)
 				reqdata["common_name"] = "Intermediate Cert"
-				reqdata["ttl"] = "90h"
+				reqdata["ttl"] = "10s"
 				return nil
 			},
 		},
@@ -739,6 +857,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 				delete(reqdata, "ttl")
 				intdata["intermediatecert"] = resp.Data["certificate"].(string)
 				reqdata["serial_number"] = resp.Data["serial_number"].(string)
+				reqdata["rsa_int_serial_number"] = resp.Data["serial_number"].(string)
 				reqdata["certificate"] = resp.Data["certificate"].(string)
 				reqdata["pem_bundle"] = intdata["intermediatekey"].(string) + "\n" + resp.Data["certificate"].(string)
 				return nil
@@ -860,7 +979,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 				delete(reqdata, "ttl")
 				reqdata["csr"] = intdata["intermediatecsr"].(string)
 				reqdata["common_name"] = "Intermediate Cert"
-				reqdata["ttl"] = "90h"
+				reqdata["ttl"] = "10s"
 				return nil
 			},
 		},
@@ -875,6 +994,7 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 				delete(reqdata, "ttl")
 				intdata["intermediatecert"] = resp.Data["certificate"].(string)
 				reqdata["serial_number"] = resp.Data["serial_number"].(string)
+				reqdata["ec_int_serial_number"] = resp.Data["serial_number"].(string)
 				reqdata["certificate"] = resp.Data["certificate"].(string)
 				reqdata["pem_bundle"] = intdata["intermediatekey"].(string) + "\n" + resp.Data["certificate"].(string)
 				return nil
@@ -928,13 +1048,220 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 					revokedString := certutil.GetOctalFormatted(revEntry.SerialNumber.Bytes(), ":")
 					if revokedString == reqdata["serial_number"].(string) {
 						found = true
-
 					}
 				}
 				if !found {
 					t.Fatalf("did not find %s in CRL", reqdata["serial_number"].(string))
 				}
 				delete(reqdata, "serial_number")
+
+				serialUnderTest = "cert/" + reqdata["rsa_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		// Make sure both serial numbers we expect to find are found
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				serialUnderTest = "cert/" + reqdata["ec_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				// Give time for the certificates to pass the safety buffer
+				t.Logf("Sleeping for 15 seconds to allow safety buffer time to pass before testing tidying")
+				time.Sleep(15 * time.Second)
+
+				serialUnderTest = "cert/" + reqdata["rsa_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		// This shouldn't do anything since the safety buffer is too long
+		logicaltest.TestStep{
+			Operation: logical.UpdateOperation,
+			Path:      "tidy",
+			Data: map[string]interface{}{
+				"safety_buffer":        "3h",
+				"tidy_cert_store":      true,
+				"tidy_revocation_list": true,
+			},
+		},
+
+		// We still expect to find these
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				serialUnderTest = "cert/" + reqdata["ec_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				serialUnderTest = "cert/" + reqdata["rsa_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		// Both should appear in the CRL
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			Path:      "crl",
+			Data:      reqdata,
+			Check: func(resp *logical.Response) error {
+				crlBytes := resp.Data["http_raw_body"].([]byte)
+				certList, err := x509.ParseCRL(crlBytes)
+				if err != nil {
+					t.Fatalf("err: %s", err)
+				}
+				revokedList := certList.TBSCertList.RevokedCertificates
+				if len(revokedList) != 2 {
+					t.Fatalf("length of revoked list not 2; %d", len(revokedList))
+				}
+				foundRsa := false
+				foundEc := false
+				for _, revEntry := range revokedList {
+					revokedString := certutil.GetOctalFormatted(revEntry.SerialNumber.Bytes(), ":")
+					if revokedString == reqdata["rsa_int_serial_number"].(string) {
+						foundRsa = true
+					}
+					if revokedString == reqdata["ec_int_serial_number"].(string) {
+						foundEc = true
+					}
+				}
+				if !foundRsa || !foundEc {
+					t.Fatalf("did not find an expected entry in CRL")
+				}
+
+				return nil
+			},
+		},
+
+		// This shouldn't do anything since the boolean values default to false
+		logicaltest.TestStep{
+			Operation: logical.UpdateOperation,
+			Path:      "tidy",
+			Data: map[string]interface{}{
+				"safety_buffer": "1s",
+			},
+		},
+
+		// We still expect to find these
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				serialUnderTest = "cert/" + reqdata["ec_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				serialUnderTest = "cert/" + reqdata["rsa_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		// This should remove the values since the safety buffer is short
+		logicaltest.TestStep{
+			Operation: logical.UpdateOperation,
+			Path:      "tidy",
+			Data: map[string]interface{}{
+				"safety_buffer":        "1s",
+				"tidy_cert_store":      true,
+				"tidy_revocation_list": true,
+			},
+		},
+
+		// We do *not* expect to find these
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] == nil || resp.Data["error"].(string) == "" {
+					return fmt.Errorf("didn't get an expected error")
+				}
+
+				serialUnderTest = "cert/" + reqdata["ec_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] == nil || resp.Data["error"].(string) == "" {
+					return fmt.Errorf("didn't get an expected error")
+				}
+
+				serialUnderTest = "cert/" + reqdata["rsa_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		// Both should be gone from the CRL
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			Path:      "crl",
+			Data:      reqdata,
+			Check: func(resp *logical.Response) error {
+				crlBytes := resp.Data["http_raw_body"].([]byte)
+				certList, err := x509.ParseCRL(crlBytes)
+				if err != nil {
+					t.Fatalf("err: %s", err)
+				}
+				revokedList := certList.TBSCertList.RevokedCertificates
+				if len(revokedList) != 0 {
+					t.Fatalf("length of revoked list not 0; %d", len(revokedList))
+				}
+
 				return nil
 			},
 		},
@@ -970,6 +1297,28 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 		}
 	}
 
+	/*
+		// For the number of tests being run, a seed of 1 has been tested
+		// to hit all of the various values below. However, for normal
+		// testing we use a randomized time for maximum fuzziness.
+	*/
+	var seed int64 = 1
+	fixedSeed := os.Getenv("VAULT_PKITESTS_FIXED_SEED")
+	if len(fixedSeed) == 0 {
+		seed = time.Now().UnixNano()
+	} else {
+		var err error
+		seed, err = strconv.ParseInt(fixedSeed, 10, 64)
+		if err != nil {
+			t.Fatalf("error parsing fixed seed of %s: %v", fixedSeed, err)
+		}
+	}
+	mathRand := mathrand.New(mathrand.NewSource(seed))
+	t.Logf("seed under test: %v", seed)
+
+	// Used by tests not toggling common names to turn off the behavior of random key bit fuzziness
+	keybitSizeRandOff := false
+
 	genericErrorOkCheck := func(resp *logical.Response) error {
 		if resp.IsError() {
 			return nil
@@ -979,8 +1328,10 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 
 	// Adds tests with the currently configured issue/role information
 	addTests := func(testCheck logicaltest.TestCheckFunc) {
-		//fmt.Printf("role vals: %#v\n", roleVals)
-		//fmt.Printf("issue vals: %#v\n", issueTestStep)
+		stepCount += 1
+		//t.Logf("test step %d\nrole vals: %#v\n", stepCount, roleVals)
+		stepCount += 1
+		//t.Logf("test step %d\nissue vals: %#v\n", stepCount, issueTestStep)
 		roleTestStep.Data = structs.New(roleVals).Map()
 		ret = append(ret, roleTestStep)
 		issueTestStep.Data = structs.New(issueVals).Map()
@@ -1055,9 +1406,6 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 	// combinations with allowed toggles of the role
 	addCnTests := func() {
 		cnMap := structs.New(commonNames).Map()
-		// For the number of tests being run, this is known to hit all
-		// of the various values below
-		mathRand := mathrand.New(mathrand.NewSource(1))
 		for name, allowedInt := range cnMap {
 			roleVals.KeyType = "rsa"
 			roleVals.KeyBits = 2048
@@ -1094,21 +1442,50 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 					issueVals.CommonName = "user@" + issueVals.CommonName
 				}
 			}
-			if allowed {
-				issueTestStep.ErrorOk = false
-			} else {
-				issueTestStep.ErrorOk = true
-			}
+
+			issueTestStep.ErrorOk = !allowed
 
 			validity, _ := time.ParseDuration(roleVals.MaxTTL)
+
+			var testBitSize int
+
 			if useCSRs {
+				rsaKeyBits := []int{2048, 4096}
+				ecKeyBits := []int{224, 256, 384, 521}
+
 				var privKey crypto.Signer
 				switch roleVals.KeyType {
 				case "rsa":
-					privKey, _ = rsa.GenerateKey(rand.Reader, roleVals.KeyBits)
+					roleVals.KeyBits = rsaKeyBits[mathRand.Int()%2]
+
+					// If we don't expect an error already, randomly choose a
+					// key size and expect an error if it's less than the role
+					// setting
+					testBitSize = roleVals.KeyBits
+					if !keybitSizeRandOff && !issueTestStep.ErrorOk {
+						testBitSize = rsaKeyBits[mathRand.Int()%2]
+					}
+
+					if testBitSize < roleVals.KeyBits {
+						issueTestStep.ErrorOk = true
+					}
+
+					privKey, _ = rsa.GenerateKey(rand.Reader, testBitSize)
+
 				case "ec":
+					roleVals.KeyBits = ecKeyBits[mathRand.Int()%4]
+
 					var curve elliptic.Curve
-					switch roleVals.KeyBits {
+
+					// If we don't expect an error already, randomly choose a
+					// key size and expect an error if it's less than the role
+					// setting
+					testBitSize = roleVals.KeyBits
+					if !keybitSizeRandOff && !issueTestStep.ErrorOk {
+						testBitSize = ecKeyBits[mathRand.Int()%4]
+					}
+
+					switch testBitSize {
 					case 224:
 						curve = elliptic.P224()
 					case 256:
@@ -1118,6 +1495,11 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 					case 521:
 						curve = elliptic.P521()
 					}
+
+					if curve.Params().BitSize < roleVals.KeyBits {
+						issueTestStep.ErrorOk = true
+					}
+
 					privKey, _ = ecdsa.GenerateKey(curve, rand.Reader)
 				}
 				templ := &x509.CertificateRequest{
@@ -1134,6 +1516,7 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 					Bytes: csr,
 				}
 				issueVals.CSR = strings.TrimSpace(string(pem.EncodeToMemory(&block)))
+
 				addTests(getCnCheck(issueVals.CommonName, roleVals, privKey, usage, validity))
 			} else {
 				addTests(getCnCheck(issueVals.CommonName, roleVals, nil, usage, validity))
@@ -1179,6 +1562,11 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 
 		roleVals.EnforceHostnames = false
 		commonNames.NonHostname = true
+		addCnTests()
+
+		// Ensure that we end up with acceptable key sizes since they won't be
+		// toggled any longer
+		keybitSizeRandOff = true
 		addCnTests()
 	}
 	// IP SAN tests
