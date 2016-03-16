@@ -8,13 +8,16 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/armon/go-metrics"
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/logutils"
 	"github.com/hashicorp/vault/audit"
 	"github.com/hashicorp/vault/command/server"
@@ -34,16 +37,22 @@ type ServerCommand struct {
 	CredentialBackends map[string]logical.Factory
 	LogicalBackends    map[string]logical.Factory
 
-	ShutdownCh <-chan struct{}
+	ShutdownCh chan struct{}
+	SighupCh   chan struct{}
+
 	Meta
+
+	ReloadFuncs map[string][]server.ReloadFunc
 }
 
 func (c *ServerCommand) Run(args []string) int {
 	var dev, verifyOnly bool
 	var configPath []string
-	var logLevel string
+	var logLevel, devRootTokenID, devListenAddress string
 	flags := c.Meta.FlagSet("server", FlagSetDefault)
 	flags.BoolVar(&dev, "dev", false, "")
+	flags.StringVar(&devRootTokenID, "dev-root-token-id", "", "")
+	flags.StringVar(&devListenAddress, "dev-listen-address", "", "")
 	flags.StringVar(&logLevel, "log-level", "info", "")
 	flags.BoolVar(&verifyOnly, "verify-only", false, "")
 	flags.Usage = func() { c.Ui.Error(c.Help()) }
@@ -52,17 +61,39 @@ func (c *ServerCommand) Run(args []string) int {
 		return 1
 	}
 
+	if os.Getenv("VAULT_DEV_ROOT_TOKEN_ID") != "" {
+		devRootTokenID = os.Getenv("VAULT_DEV_ROOT_TOKEN_ID")
+	}
+
+	if os.Getenv("VAULT_DEV_LISTEN_ADDRESS") != "" {
+		devListenAddress = os.Getenv("VAULT_DEV_LISTEN_ADDRESS")
+	}
+
 	// Validation
-	if !dev && len(configPath) == 0 {
-		c.Ui.Error("At least one config path must be specified with -config")
-		flags.Usage()
-		return 1
+	if !dev {
+		switch {
+		case len(configPath) == 0:
+			c.Ui.Error("At least one config path must be specified with -config")
+			flags.Usage()
+			return 1
+		case devRootTokenID != "":
+			c.Ui.Error("Root token ID can only be specified with -dev")
+			flags.Usage()
+			return 1
+		case devListenAddress != "":
+			c.Ui.Error("Development address can only be specified with -dev")
+			flags.Usage()
+			return 1
+		}
 	}
 
 	// Load the configuration
 	var config *server.Config
 	if dev {
 		config = server.DevConfig()
+		if devListenAddress != "" {
+			config.Listeners[0].Config["address"] = devListenAddress
+		}
 	}
 	for _, path := range configPath {
 		current, err := server.LoadConfig(path)
@@ -193,7 +224,7 @@ func (c *ServerCommand) Run(args []string) int {
 
 	// If we're in dev mode, then initialize the core
 	if dev {
-		init, err := c.enableDev(core)
+		init, err := c.enableDev(core, devRootTokenID)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf(
 				"Error initializing dev mode: %s", err))
@@ -215,7 +246,7 @@ func (c *ServerCommand) Run(args []string) int {
 				"immediately begin using the Vault CLI.\n\n"+
 				"The only step you need to take is to set the following\n"+
 				"environment variables:\n\n"+
-				"    "+export+" VAULT_ADDR="+quote+"http://127.0.0.1:8200"+quote+"\n\n"+
+				"    "+export+" VAULT_ADDR="+quote+"http://"+config.Listeners[0].Config["address"]+quote+"\n\n"+
 				"The unseal key and root token are reproduced below in case you\n"+
 				"want to seal/unseal the Vault or play with authentication.\n\n"+
 				"Unseal Key: %s\nRoot Token: %s\n",
@@ -250,7 +281,7 @@ func (c *ServerCommand) Run(args []string) int {
 	// Initialize the listeners
 	lns := make([]net.Listener, 0, len(config.Listeners))
 	for i, lnConfig := range config.Listeners {
-		ln, props, err := server.NewListener(lnConfig.Type, lnConfig.Config)
+		ln, props, reloadFunc, err := server.NewListener(lnConfig.Type, lnConfig.Config)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf(
 				"Error initializing listener of type %s: %s",
@@ -271,6 +302,12 @@ func (c *ServerCommand) Run(args []string) int {
 			"%s (%s)", lnConfig.Type, strings.Join(propsList, ", "))
 
 		lns = append(lns, ln)
+
+		if reloadFunc != nil {
+			relSlice := c.ReloadFuncs["listener|"+lnConfig.Type]
+			relSlice = append(relSlice, reloadFunc)
+			c.ReloadFuncs["listener|"+lnConfig.Type] = relSlice
+		}
 	}
 
 	infoKeys = append(infoKeys, "version")
@@ -309,17 +346,26 @@ func (c *ServerCommand) Run(args []string) int {
 	logGate.Flush()
 
 	// Wait for shutdown
-	select {
-	case <-c.ShutdownCh:
-		c.Ui.Output("==> Vault shutdown triggered")
-		if err := core.Shutdown(); err != nil {
-			c.Ui.Error(fmt.Sprintf("Error with core shutdown: %s", err))
+	shutdownTriggered := false
+	for !shutdownTriggered {
+		select {
+		case <-c.ShutdownCh:
+			c.Ui.Output("==> Vault shutdown triggered")
+			if err := core.Shutdown(); err != nil {
+				c.Ui.Error(fmt.Sprintf("Error with core shutdown: %s", err))
+			}
+			shutdownTriggered = true
+		case <-c.SighupCh:
+			c.Ui.Output("==> Vault reload triggered")
+			if err := c.Reload(configPath); err != nil {
+				c.Ui.Error(fmt.Sprintf("Error(s) were encountered during reload: %s", err))
+			}
 		}
 	}
 	return 0
 }
 
-func (c *ServerCommand) enableDev(core *vault.Core) (*vault.InitResult, error) {
+func (c *ServerCommand) enableDev(core *vault.Core, rootTokenID string) (*vault.InitResult, error) {
 	// Initialize it with a basic single key
 	init, err := core.Initialize(&vault.SealConfig{
 		SecretShares:    1,
@@ -340,6 +386,39 @@ func (c *ServerCommand) enableDev(core *vault.Core) (*vault.InitResult, error) {
 	}
 	if !unsealed {
 		return nil, fmt.Errorf("failed to unseal Vault for dev mode")
+	}
+
+	if rootTokenID != "" {
+		req := &logical.Request{
+			Operation:   logical.UpdateOperation,
+			ClientToken: init.RootToken,
+			Path:        "auth/token/create",
+			Data: map[string]interface{}{
+				"id":                rootTokenID,
+				"policies":          []string{"root"},
+				"no_parent":         true,
+				"no_default_policy": true,
+			},
+		}
+		resp, err := core.HandleRequest(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create root token with ID %s: %s", rootTokenID, err)
+		}
+		if resp == nil {
+			return nil, fmt.Errorf("nil response when creating root token with ID %s", rootTokenID)
+		}
+		if resp.Auth == nil {
+			return nil, fmt.Errorf("nil auth when creating root token with ID %s", rootTokenID)
+		}
+
+		init.RootToken = resp.Auth.ClientToken
+
+		req.Path = "auth/token/revoke-self"
+		req.Data = nil
+		resp, err = core.HandleRequest(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to revoke initial root token: %s", err)
+		}
 	}
 
 	// Set the token
@@ -473,6 +552,46 @@ func (c *ServerCommand) setupTelementry(config *server.Config) error {
 	return nil
 }
 
+func (c *ServerCommand) Reload(configPath []string) error {
+	// Read the new config
+	var config *server.Config
+	for _, path := range configPath {
+		current, err := server.LoadConfig(path)
+		if err != nil {
+			retErr := fmt.Errorf("Error loading configuration from %s: %s", path, err)
+			c.Ui.Error(retErr.Error())
+			return retErr
+		}
+
+		if config == nil {
+			config = current
+		} else {
+			config = config.Merge(current)
+		}
+	}
+
+	// Ensure at least one config was found.
+	if config == nil {
+		retErr := fmt.Errorf("No configuration files found")
+		c.Ui.Error(retErr.Error())
+		return retErr
+	}
+
+	var reloadErrors *multierror.Error
+	// Call reload on the listeners. This will call each listener with each
+	// config block, but they verify the address.
+	for _, lnConfig := range config.Listeners {
+		for _, relFunc := range c.ReloadFuncs["listener|"+lnConfig.Type] {
+			if err := relFunc(lnConfig.Config); err != nil {
+				retErr := fmt.Errorf("Error encountered reloading configuration: %s", err)
+				reloadErrors = multierror.Append(retErr)
+			}
+		}
+	}
+
+	return reloadErrors.ErrorOrNil()
+}
+
 func (c *ServerCommand) Synopsis() string {
 	return "Start a Vault server"
 }
@@ -495,18 +614,62 @@ Usage: vault server [options]
 
 General Options:
 
-  -config=<path>      Path to the configuration file or directory. This can be
-                      specified multiple times. If it is a directory, all
-                      files with a ".hcl" or ".json" suffix will be loaded.
+  -config=<path>          Path to the configuration file or directory. This can
+                          be specified multiple times. If it is a directory,
+                          all files with a ".hcl" or ".json" suffix will be
+                          loaded.
 
-  -dev                Enables Dev mode. In this mode, Vault is completely
-                      in-memory and unsealed. Do not run the Dev server in
-                      production!
+  -dev                    Enables Dev mode. In this mode, Vault is completely
+                          in-memory and unsealed. Do not run the Dev server in
+                          production!
 
-  -log-level=info     Log verbosity. Defaults to "info", will be outputted
-                      to stderr. Supported values: "trace", "debug", "info",
-                      "warn", "err"
+  -dev-root-token-id=""   If set, the root token returned in Dev mode will have
+                          the given ID. This *only* has an effect when running
+                          in Dev mode. Can also be specified with the
+                          VAULT_DEV_ROOT_TOKEN_ID environment variable.
 
+  -dev-listen-address=""  If set, this overrides the normal Dev mode listen
+                          address of "127.0.0.1:8200". Can also be specified
+                          with the VAULT_DEV_LISTEN_ADDRESS environment
+                          variable.
+
+  -log-level=info         Log verbosity. Defaults to "info", will be output to
+                          stderr. Supported values: "trace", "debug", "info",
+                          "warn", "err"
 `
 	return strings.TrimSpace(helpText)
+}
+
+// MakeShutdownCh returns a channel that can be used for shutdown
+// notifications for commands. This channel will send a message for every
+// interrupt or SIGTERM received.
+func MakeShutdownCh() chan struct{} {
+	resultCh := make(chan struct{})
+
+	signalCh := make(chan os.Signal, 4)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		for {
+			<-signalCh
+			resultCh <- struct{}{}
+		}
+	}()
+	return resultCh
+}
+
+// MakeSighupCh returns a channel that can be used for SIGHUP
+// reloading. This channel will send a message for every
+// SIGHUP received.
+func MakeSighupCh() chan struct{} {
+	resultCh := make(chan struct{})
+
+	signalCh := make(chan os.Signal, 4)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGHUP)
+	go func() {
+		for {
+			<-signalCh
+			resultCh <- struct{}{}
+		}
+	}()
+	return resultCh
 }

@@ -671,39 +671,6 @@ func TestCore_HandleRequest_PermissionAllowed(t *testing.T) {
 	}
 }
 
-func TestCore_HandleRequest_NoConnection(t *testing.T) {
-	noop := &NoopBackend{
-		Response: &logical.Response{},
-	}
-	c, _, root := TestCoreUnsealed(t)
-	c.logicalBackends["noop"] = func(*logical.BackendConfig) (logical.Backend, error) {
-		return noop, nil
-	}
-
-	// Enable the logical backend
-	req := logical.TestRequest(t, logical.UpdateOperation, "sys/mounts/foo")
-	req.Data["type"] = "noop"
-	req.Data["description"] = "foo"
-	req.ClientToken = root
-	_, err := c.HandleRequest(req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-
-	// Attempt to request with connection data
-	req = &logical.Request{
-		Path:       "foo/login",
-		Connection: &logical.Connection{},
-	}
-	req.ClientToken = root
-	if _, err := c.HandleRequest(req); err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if noop.Requests[0].Connection != nil {
-		t.Fatalf("bad: %#v", noop.Requests)
-	}
-}
-
 func TestCore_HandleRequest_NoClientToken(t *testing.T) {
 	noop := &NoopBackend{
 		Response: &logical.Response{},
@@ -820,8 +787,9 @@ func TestCore_HandleLogin_Token(t *testing.T) {
 	}
 	expect := &TokenEntry{
 		ID:       clientToken,
+		Accessor: te.Accessor,
 		Parent:   "",
-		Policies: []string{"foo", "bar", "default"},
+		Policies: []string{"bar", "default", "foo"},
 		Path:     "auth/foo/login",
 		Meta: map[string]string{
 			"user": "armon",
@@ -982,7 +950,7 @@ func TestCore_HandleLogin_AuditTrail(t *testing.T) {
 	if auth.ClientToken != clientToken {
 		t.Fatalf("bad client token: %#v", auth)
 	}
-	if len(auth.Policies) != 2 || auth.Policies[0] != "foo" || auth.Policies[1] != "bar" {
+	if len(auth.Policies) != 3 || auth.Policies[0] != "bar" || auth.Policies[1] != "default" || auth.Policies[2] != "foo" {
 		t.Fatalf("bad: %#v", auth)
 	}
 	if len(noop.RespReq) != 2 || !reflect.DeepEqual(noop.RespReq[1], lreq) {
@@ -1019,6 +987,7 @@ func TestCore_HandleRequest_CreateToken_Lease(t *testing.T) {
 	}
 	expect := &TokenEntry{
 		ID:           clientToken,
+		Accessor:     te.Accessor,
 		Parent:       root,
 		Policies:     []string{"default", "foo"},
 		Path:         "auth/token/create",
@@ -1063,6 +1032,7 @@ func TestCore_HandleRequest_CreateToken_NoDefaultPolicy(t *testing.T) {
 	}
 	expect := &TokenEntry{
 		ID:           clientToken,
+		Accessor:     te.Accessor,
 		Parent:       root,
 		Policies:     []string{"foo"},
 		Path:         "auth/token/create",
@@ -1139,9 +1109,6 @@ func TestCore_Standby_Seal(t *testing.T) {
 	// Wait for core to become active
 	testWaitActive(t, core)
 
-	// Ensure that the original clean function has stopped running
-	time.Sleep(2 * time.Second)
-
 	// Check the leader is local
 	isLeader, advertise, err := core.Leader()
 	if err != nil {
@@ -1213,6 +1180,180 @@ func TestCore_Standby_Seal(t *testing.T) {
 	err = core2.Seal(keyUUID)
 	if err == nil {
 		t.Fatal("should not be sealed")
+	}
+}
+
+func TestCore_StepDown(t *testing.T) {
+	// Create the first core and initialize it
+	inm := physical.NewInmem()
+	inmha := physical.NewInmemHA()
+	advertiseOriginal := "http://127.0.0.1:8200"
+	core, err := NewCore(&CoreConfig{
+		Physical:      inm,
+		HAPhysical:    inmha,
+		AdvertiseAddr: advertiseOriginal,
+		DisableMlock:  true,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	key, root := TestCoreInit(t, core)
+	if _, err := core.Unseal(TestKeyCopy(key)); err != nil {
+		t.Fatalf("unseal err: %s", err)
+	}
+
+	// Verify unsealed
+	sealed, err := core.Sealed()
+	if err != nil {
+		t.Fatalf("err checking seal status: %s", err)
+	}
+	if sealed {
+		t.Fatal("should not be sealed")
+	}
+
+	// Wait for core to become active
+	testWaitActive(t, core)
+
+	// Check the leader is local
+	isLeader, advertise, err := core.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !isLeader {
+		t.Fatalf("should be leader")
+	}
+	if advertise != advertiseOriginal {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Create the second core and initialize it
+	advertiseOriginal2 := "http://127.0.0.1:8500"
+	core2, err := NewCore(&CoreConfig{
+		Physical:      inm,
+		HAPhysical:    inmha,
+		AdvertiseAddr: advertiseOriginal2,
+		DisableMlock:  true,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if _, err := core2.Unseal(TestKeyCopy(key)); err != nil {
+		t.Fatalf("unseal err: %s", err)
+	}
+
+	// Verify unsealed
+	sealed, err = core2.Sealed()
+	if err != nil {
+		t.Fatalf("err checking seal status: %s", err)
+	}
+	if sealed {
+		t.Fatal("should not be sealed")
+	}
+
+	// Core2 should be in standby
+	standby, err := core2.Standby()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !standby {
+		t.Fatalf("should be standby")
+	}
+
+	// Check the leader is not local
+	isLeader, advertise, err = core2.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if isLeader {
+		t.Fatalf("should not be leader")
+	}
+	if advertise != advertiseOriginal {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Step down core
+	err = core.StepDown(root)
+	if err != nil {
+		t.Fatal("error stepping down core 1")
+	}
+
+	// Give time to switch leaders
+	time.Sleep(2 * time.Second)
+
+	// Core1 should be in standby
+	standby, err = core.Standby()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !standby {
+		t.Fatalf("should be standby")
+	}
+
+	// Check the leader is core2
+	isLeader, advertise, err = core2.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !isLeader {
+		t.Fatalf("should be leader")
+	}
+	if advertise != advertiseOriginal2 {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Check the leader is not local
+	isLeader, advertise, err = core.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if isLeader {
+		t.Fatalf("should not be leader")
+	}
+	if advertise != advertiseOriginal2 {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Step down core2
+	err = core2.StepDown(root)
+	if err != nil {
+		t.Fatal("error stepping down core 1")
+	}
+
+	// Give time to switch leaders -- core 1 will still be waiting on its
+	// cooling off period so give it a full 10 seconds to recover
+	time.Sleep(10 * time.Second)
+
+	// Core2 should be in standby
+	standby, err = core2.Standby()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !standby {
+		t.Fatalf("should be standby")
+	}
+
+	// Check the leader is core1
+	isLeader, advertise, err = core.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !isLeader {
+		t.Fatalf("should be leader")
+	}
+	if advertise != advertiseOriginal {
+		t.Fatalf("Bad advertise: %v", advertise)
+	}
+
+	// Check the leader is not local
+	isLeader, advertise, err = core2.Leader()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if isLeader {
+		t.Fatalf("should not be leader")
+	}
+	if advertise != advertiseOriginal {
+		t.Fatalf("Bad advertise: %v", advertise)
 	}
 }
 

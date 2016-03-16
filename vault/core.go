@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,10 @@ const (
 	// leaderPrefixCleanDelay is how long to wait between deletions
 	// of orphaned leader keys, to prevent slamming the backend.
 	leaderPrefixCleanDelay = 200 * time.Millisecond
+
+	// manualStepDownSleepPeriod is how long to sleep after a user-initiated
+	// step down of the active node, to prevent instantly regrabbing the lock
+	manualStepDownSleepPeriod = 10 * time.Second
 )
 
 var (
@@ -206,9 +211,10 @@ type Core struct {
 	stateLock sync.RWMutex
 	sealed    bool
 
-	standby       bool
-	standbyDoneCh chan struct{}
-	standbyStopCh chan struct{}
+	standby          bool
+	standbyDoneCh    chan struct{}
+	standbyStopCh    chan struct{}
+	manualStepDownCh chan struct{}
 
 	// unlockParts has the keys provided to Unseal until
 	// the threshold number of parts is available.
@@ -592,23 +598,6 @@ func (c *Core) handleRequest(req *logical.Request) (retResp *logical.Response, r
 			return nil, auth, ErrInternalError
 		}
 
-		sysView := c.router.MatchingSystemView(req.Path)
-		if sysView == nil {
-			c.logger.Println("[ERR] core: unable to retrieve system view from router")
-			return nil, auth, ErrInternalError
-		}
-
-		// Apply the default lease if none given
-		if resp.Auth.TTL == 0 && !strListContains(resp.Auth.Policies, "root") {
-			resp.Auth.TTL = sysView.DefaultLeaseTTL()
-		}
-
-		// Limit the lease duration
-		maxTTL := sysView.MaxLeaseTTL()
-		if resp.Auth.TTL > maxTTL {
-			resp.Auth.TTL = maxTTL
-		}
-
 		// Register with the expiration manager
 		if err := c.expiration.RegisterAuth(req.Path, resp.Auth); err != nil {
 			c.logger.Printf("[ERR] core: failed to register token lease "+
@@ -683,8 +672,29 @@ func (c *Core) handleLoginRequest(req *logical.Request) (*logical.Response, *log
 			TTL:          auth.TTL,
 		}
 
-		if !strListSubset(te.Policies, []string{"root"}) {
-			te.Policies = append(te.Policies, "default")
+		if strListSubset(te.Policies, []string{"root"}) {
+			te.Policies = []string{"root"}
+		} else {
+			// Use a map to filter out/prevent duplicates
+			policyMap := map[string]bool{}
+			for _, policy := range te.Policies {
+				if policy == "" {
+					// Don't allow a policy with no name, even though it is a valid
+					// slice member
+					continue
+				}
+				policyMap[policy] = true
+			}
+
+			// Add the default policy
+			policyMap["default"] = true
+
+			te.Policies = []string{}
+			for k, _ := range policyMap {
+				te.Policies = append(te.Policies, k)
+			}
+
+			sort.Strings(te.Policies)
 		}
 
 		if err := c.tokenStore.create(&te); err != nil {
@@ -692,8 +702,10 @@ func (c *Core) handleLoginRequest(req *logical.Request) (*logical.Response, *log
 			return nil, auth, ErrInternalError
 		}
 
-		// Populate the client token
+		// Populate the client token and accessor
 		auth.ClientToken = te.ID
+		auth.Accessor = te.Accessor
+		auth.Policies = te.Policies
 
 		// Register with the expiration manager
 		if err := c.expiration.RegisterAuth(req.Path, auth); err != nil {
@@ -1149,7 +1161,8 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 		// Go to standby mode, wait until we are active to unseal
 		c.standbyDoneCh = make(chan struct{})
 		c.standbyStopCh = make(chan struct{})
-		go c.runStandby(c.standbyDoneCh, c.standbyStopCh)
+		c.manualStepDownCh = make(chan struct{})
+		go c.runStandby(c.standbyDoneCh, c.standbyStopCh, c.manualStepDownCh)
 	}
 
 	// Success!
@@ -1161,6 +1174,7 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 // be unsealed again to perform any further operations.
 func (c *Core) Seal(token string) (retErr error) {
 	defer metrics.MeasureSince([]string{"core", "seal"}, time.Now())
+
 	c.stateLock.Lock()
 	defer c.stateLock.Unlock()
 	if c.sealed {
@@ -1173,15 +1187,8 @@ func (c *Core) Seal(token string) (retErr error) {
 		Path:        "sys/seal",
 		ClientToken: token,
 	}
-	acl, te, err := c.fetchACLandTokenEntry(req)
 
-	// Attempt to use the token (decrement num_uses)
-	if te != nil {
-		if err := c.tokenStore.UseToken(te); err != nil {
-			c.logger.Printf("[ERR] core: failed to use token: %v", err)
-			retErr = ErrInternalError
-		}
-	}
+	acl, te, err := c.fetchACLandTokenEntry(req)
 	if err != nil {
 		// Since there is no token store in standby nodes, sealing cannot
 		// be done. Ideally, the request has to be forwarded to leader node
@@ -1189,10 +1196,19 @@ func (c *Core) Seal(token string) (retErr error) {
 		// just returning with an error and recommending a vault restart, which
 		// essentially does the same thing.
 		if c.standby {
-			c.logger.Printf("[ERR] core: vault cannot be sealed when in standby mode; please restart instead")
-			return errors.New("vault cannot be sealed when in standby mode; please restart instead")
+			c.logger.Printf("[ERR] core: vault cannot seal when in standby mode; please restart instead")
+			return errors.New("vault cannot seal when in standby mode; please restart instead")
 		}
 		return err
+	}
+	// Attempt to use the token (decrement num_uses)
+	// If we can't, we still continue attempting the seal, so long as the token
+	// has appropriate permissions
+	if te != nil {
+		if err := c.tokenStore.UseToken(te); err != nil {
+			c.logger.Printf("[ERR] core: failed to use token: %v", err)
+			retErr = ErrInternalError
+		}
 	}
 
 	// Verify that this operation is allowed
@@ -1206,7 +1222,7 @@ func (c *Core) Seal(token string) (retErr error) {
 		return logical.ErrPermissionDenied
 	}
 
-	// Seal the Vault
+	//Seal the Vault
 	err = c.sealInternal()
 	if err == nil && retErr == ErrInternalError {
 		c.logger.Printf("[ERR] core: core is successfully sealed but another error occurred during the operation")
@@ -1217,9 +1233,60 @@ func (c *Core) Seal(token string) (retErr error) {
 	return
 }
 
-// sealInternal is an internal method used to seal the vault.
-// It does not do any authorization checking. The stateLock must
-// be held prior to calling.
+// StepDown is used to step down from leadership
+func (c *Core) StepDown(token string) error {
+	defer metrics.MeasureSince([]string{"core", "step_down"}, time.Now())
+
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
+	if c.sealed {
+		return nil
+	}
+	if c.ha == nil || c.standby {
+		return nil
+	}
+
+	// Validate the token is a root token
+	req := &logical.Request{
+		Operation:   logical.UpdateOperation,
+		Path:        "sys/step-down",
+		ClientToken: token,
+	}
+
+	acl, te, err := c.fetchACLandTokenEntry(req)
+	if err != nil {
+		return err
+	}
+	// Attempt to use the token (decrement num_uses)
+	if te != nil {
+		if err := c.tokenStore.UseToken(te); err != nil {
+			c.logger.Printf("[ERR] core: failed to use token: %v", err)
+			return err
+		}
+	}
+
+	// Verify that this operation is allowed
+	allowed, rootPrivs := acl.AllowOperation(req.Operation, req.Path)
+	if !allowed {
+		return logical.ErrPermissionDenied
+	}
+
+	// We always require root privileges for this operation
+	if !rootPrivs {
+		return logical.ErrPermissionDenied
+	}
+
+	select {
+	case c.manualStepDownCh <- struct{}{}:
+	default:
+		c.logger.Printf("[WARN] core: manual step-down operation already queued")
+	}
+
+	return nil
+}
+
+// sealInternal is an internal method used to seal the vault.  It does not do
+// any authorization checking. The stateLock must be held prior to calling.
 func (c *Core) sealInternal() error {
 	// Enable that we are sealed to prevent furthur transactions
 	c.sealed = true
@@ -1244,6 +1311,7 @@ func (c *Core) sealInternal() error {
 		return err
 	}
 	c.logger.Printf("[INFO] core: vault is sealed")
+
 	return nil
 }
 
@@ -1353,8 +1421,9 @@ func (c *Core) preSeal() error {
 // runStandby is a long running routine that is used when an HA backend
 // is enabled. It waits until we are leader and switches this Vault to
 // active.
-func (c *Core) runStandby(doneCh, stopCh chan struct{}) {
+func (c *Core) runStandby(doneCh, stopCh, manualStepDownCh chan struct{}) {
 	defer close(doneCh)
+	defer close(manualStepDownCh)
 	c.logger.Printf("[INFO] core: entering standby mode")
 
 	// Monitor for key rotation
@@ -1418,11 +1487,15 @@ func (c *Core) runStandby(doneCh, stopCh chan struct{}) {
 		}
 
 		// Monitor a loss of leadership
+		var manualStepDown bool
 		select {
 		case <-leaderLostCh:
 			c.logger.Printf("[WARN] core: leadership lost, stopping active operation")
 		case <-stopCh:
 			c.logger.Printf("[WARN] core: stopping active operation")
+		case <-manualStepDownCh:
+			c.logger.Printf("[WARN] core: stepping down from active operation to standby")
+			manualStepDown = true
 		}
 
 		// Clear ourself as leader
@@ -1442,6 +1515,12 @@ func (c *Core) runStandby(doneCh, stopCh chan struct{}) {
 		// Check for a failure to prepare to seal
 		if preSealErr != nil {
 			c.logger.Printf("[ERR] core: pre-seal teardown failed: %v", err)
+		}
+
+		// If we've merely stepped down, we could instantly grab the lock
+		// again. Give the other nodes a chance.
+		if manualStepDown {
+			time.Sleep(manualStepDownSleepPeriod)
 		}
 	}
 }

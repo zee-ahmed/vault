@@ -1,5 +1,93 @@
-## 0.5.1 (February 25th, 2016)
+## 0.5.2 (March 16th, 2016)
 
+FEATURES:
+
+ * **MSSQL Backend**: Generate dynamic unique MSSQL database credentials based
+   on configured roles [GH-998]
+ * **Token Accessors**: Vault now provides an accessor with each issued token.
+   This accessor is an identifier that can be used for a limited set of
+   actions, notably for token revocation. This value is by default logged in
+   plaintext to audit logs, and in combination with the plaintext metadata
+   logged to audit logs, provides a searchable and straightforward way to
+   revoke particular users' or services' tokens in many cases. At enable time,
+   audit backends can be configured to HMAC the accessor instead.
+ * **Token Credential Backend Roles**: Roles can now be created in the `token`
+   credential backend that allow modifying token behavior in ways that are not
+   otherwise exposed or easily delegated. This allows creating tokens with a
+   fixed set (or subset) of policies (rather than a subset of the calling
+   token's), periodic tokens with a fixed TTL but no expiration, specified
+   prefixes, and orphans.
+ * **Listener Certificate Reloading**: Vault's configured listeners now reload
+   their TLS certificate and private key when the Vault process receives a
+   SIGHUP.
+
+IMPROVEMENTS:
+ * auth/token: Endpoints optionally accept tokens from the HTTP body rather
+   than just from the URLs [GH-1211]
+ * auth/token,sys/capabilities: Added new endpoints
+   `auth/token/lookup-accessor`, `auth/token/revoke-accessor` and
+   `sys/capabilities-accessor`, which enables performing the respective actions
+   with just the accessor of the tokens, without having access to the actual
+   token [GH-1188]
+ * core: Ignore leading `/` in policy paths [GH-1170]
+ * core: Ignore leading `/` in mount paths [GH-1172]
+ * command/policy-write: Provided HCL is now validated for format violations
+   and provides helpful information around where the violation occurred
+   [GH-1200]
+ * command/server: The initial root token ID when running in `-dev` mode can
+   now be specified via `-dev-root-token-id` or the environment variable
+   `VAULT_DEV_ROOT_TOKEN_ID` [GH-1162]
+ * command/server: The listen address when running in `-dev` mode can now be
+   specified via `-dev-listen-address` or the environment variable
+   `VAULT_DEV_LISTEN_ADDRESS` [GH-1169]
+ * command/server: The configured listeners now reload their TLS
+   certificates/keys when Vault is SIGHUP'd [GH-1196]
+ * command/step-down: New `vault step-down` command and API endpoint to force
+   the targeted node to give up active status, but without sealing. The node
+   will wait ten seconds before attempting to grab the lock again. [GH-1146]
+ * command/token-renew: Allow no token to be passed in; use `renew-self` in
+   this case. Change the behavior for any token being passed in to use `renew`.
+   [GH-1150]
+ * credential/app-id: Allow `app-id` parameter to be given in the login path;
+   this causes the `app-id` to be part of the token path, making it easier to
+   use with `revoke-prefix` [GH-424]
+ * credential/cert: Non-CA certificates can be used for authentication. They
+   must be matched exactly (issuer and serial number) for authentication, and
+   the certificate must carry the client authentication or 'any' extended usage
+   attributes. [GH-1153]
+ * credential/cert: Subject and Authority key IDs are output in metadata; this
+   allows more flexible searching/revocation in the audit logs [GH-1183]
+ * credential/cert: Support listing configured certs [GH-1212]
+ * credential/userpass: Add support for `create`/`update` capability
+   distinction in user path, and add user-specific endpoints to allow changing
+   the password and policies [GH-1216]
+ * credential/token: Add roles [GH-1155]
+ * secret/mssql: Add MSSQL backend [GH-998]
+ * secret/pki: Add revocation time (zero or Unix epoch) to `pki/cert/SERIAL`
+   endpoint [GH-1180]
+ * secret/pki: Sanitize serial number in `pki/revoke` endpoint to allow some
+   other formats [GH-1187]
+ * secret/ssh: Added documentation for `ssh/config/zeroaddress` endpoint.
+   [GH-1154]
+ * sys: Added new endpoints `sys/capabilities` and `sys/capabilities-self` to
+   fetch the capabilities of a token on a given path [GH-1171]
+ * sys: Added `sys/revoke-force`, which enables a user to ignore backend errors
+   when revoking a lease, necessary in some emergency/failure scenarios
+   [GH-1168]
+ * sys: The return codes from `sys/health` can now be user-specified via query
+   parameters [GH-1199]
+
+BUG FIXES:
+
+ * logical/cassandra: Apply hyphen/underscore replacement to the entire
+   generated username, not just the UUID, in order to handle token display name
+   hyphens [GH-1140]
+ * physical/etcd: Output actual error when cluster sync fails [GH-1141]
+ * vault/expiration: Not letting the error responses from the backends to skip
+   during renewals [GH-1176]
+
+## 0.5.1 (February 25th, 2016)
+ 
 DEPRECATIONS/BREAKING CHANGES:
 
  * RSA keys less than 2048 bits are no longer supported in the PKI backend.

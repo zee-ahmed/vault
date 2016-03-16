@@ -1,6 +1,7 @@
 package cert
 
 import (
+	"crypto/x509"
 	"fmt"
 	"strings"
 	"time"
@@ -8,6 +9,19 @@ import (
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
+
+func pathListCerts(b *backend) *framework.Path {
+	return &framework.Path{
+		Pattern: "certs/?",
+
+		Callbacks: map[logical.Operation]framework.OperationFunc{
+			logical.ListOperation: b.pathCertList,
+		},
+
+		HelpSynopsis:    pathCertHelpSyn,
+		HelpDescription: pathCertHelpDesc,
+	}
+}
 
 func pathCerts(b *backend) *framework.Path {
 	return &framework.Path{
@@ -51,7 +65,7 @@ Defaults to system/backend default TTL time.`,
 		Callbacks: map[logical.Operation]framework.OperationFunc{
 			logical.DeleteOperation: b.pathCertDelete,
 			logical.ReadOperation:   b.pathCertRead,
-			logical.UpdateOperation:  b.pathCertWrite,
+			logical.UpdateOperation: b.pathCertWrite,
 		},
 
 		HelpSynopsis:    pathCertHelpSyn,
@@ -82,6 +96,15 @@ func (b *backend) pathCertDelete(
 		return nil, err
 	}
 	return nil, nil
+}
+
+func (b *backend) pathCertList(
+	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	certs, err := req.Storage.List("cert/")
+	if err != nil {
+		return nil, err
+	}
+	return logical.ListResponse(certs), nil
 }
 
 func (b *backend) pathCertRead(
@@ -132,6 +155,20 @@ func (b *backend) pathCertWrite(
 		return logical.ErrorResponse("failed to parse certificate"), nil
 	}
 
+	// If the certificate is not a CA cert, then ensure that x509.ExtKeyUsageClientAuth is set
+	if !parsed[0].IsCA && parsed[0].ExtKeyUsage != nil {
+		var clientAuth bool
+		for _, usage := range parsed[0].ExtKeyUsage {
+			if usage == x509.ExtKeyUsageClientAuth || usage == x509.ExtKeyUsageAny {
+				clientAuth = true
+				break
+			}
+		}
+		if !clientAuth {
+			return logical.ErrorResponse("non-CA certificates should have TLS client authentication set as an extended key usage"), nil
+		}
+	}
+
 	certEntry := &CertEntry{
 		Name:        name,
 		Certificate: certificate,
@@ -140,7 +177,6 @@ func (b *backend) pathCertWrite(
 	}
 
 	// Parse the lease duration or default to backend/system default
-	var err error
 	maxTTL := b.System().MaxLeaseTTL()
 	ttl := time.Duration(d.Get("ttl").(int)) * time.Second
 	if ttl == time.Duration(0) {

@@ -36,6 +36,10 @@ var (
 // Performs basic tests on CA functionality
 // Uses the RSA CA key
 func TestBackend_RSAKey(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -66,6 +70,10 @@ func TestBackend_RSAKey(t *testing.T) {
 // Performs basic tests on CA functionality
 // Uses the EC CA key
 func TestBackend_ECKey(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -94,6 +102,10 @@ func TestBackend_ECKey(t *testing.T) {
 }
 
 func TestBackend_CSRValues(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -122,6 +134,10 @@ func TestBackend_CSRValues(t *testing.T) {
 }
 
 func TestBackend_URLsCRUD(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -153,6 +169,10 @@ func TestBackend_URLsCRUD(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the RSA CA key
 func TestBackend_RSARoles(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -195,6 +215,10 @@ func TestBackend_RSARoles(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the RSA CA key
 func TestBackend_RSARoles_CSR(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -237,6 +261,10 @@ func TestBackend_RSARoles_CSR(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the EC CA key
 func TestBackend_ECRoles(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -279,6 +307,10 @@ func TestBackend_ECRoles(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the EC CA key
 func TestBackend_ECRoles_CSR(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		return
+	}
+
 	defaultLeaseTTLVal := time.Hour * 24
 	maxLeaseTTLVal := time.Hour * 24 * 30
 	b, err := Factory(&logical.BackendConfig{
@@ -882,6 +914,26 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
 				delete(reqdata, "certificate")
+
+				serialUnderTest = "cert/" + reqdata["rsa_int_serial_number"].(string)
+
+				return nil
+			},
+		},
+
+		// We expect to find a zero revocation time
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				if resp.Data["revocation_time"].(int64) != 0 {
+					return fmt.Errorf("expected a zero revocation time")
+				}
+
 				return nil
 			},
 		},
@@ -1019,10 +1071,29 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 			Data:      reqdata,
 			Check: func(resp *logical.Response) error {
 				delete(reqdata, "certificate")
+
+				serialUnderTest = "cert/" + reqdata["ec_int_serial_number"].(string)
+
 				return nil
 			},
 		},
 
+		// We expect to find a zero revocation time
+		logicaltest.TestStep{
+			Operation: logical.ReadOperation,
+			PreFlight: setSerialUnderTest,
+			Check: func(resp *logical.Response) error {
+				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
+					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				if resp.Data["revocation_time"].(int64) != 0 {
+					return fmt.Errorf("expected a zero revocation time")
+				}
+
+				return nil
+			},
+		},
 		logicaltest.TestStep{
 			Operation: logical.UpdateOperation,
 			Path:      "revoke",
@@ -1070,6 +1141,10 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
 				}
 
+				if resp.Data["revocation_time"].(int64) == 0 {
+					return fmt.Errorf("expected a non-zero revocation time")
+				}
+
 				serialUnderTest = "cert/" + reqdata["ec_int_serial_number"].(string)
 
 				return nil
@@ -1082,6 +1157,10 @@ func generateCATestingSteps(t *testing.T, caCert, caKey, otherCaCert string, int
 			Check: func(resp *logical.Response) error {
 				if resp.Data["error"] != nil && resp.Data["error"].(string) != "" {
 					return fmt.Errorf("got an error: %s", resp.Data["error"].(string))
+				}
+
+				if resp.Data["revocation_time"].(int64) == 0 {
+					return fmt.Errorf("expected a non-zero revocation time")
 				}
 
 				// Give time for the certificates to pass the safety buffer

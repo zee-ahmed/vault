@@ -50,8 +50,8 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 					logical.DeleteOperation: b.handleRekeyDelete,
 				},
 
-				HelpSynopsis:    strings.TrimSpace(sysHelp["mount_tune"][0]),
-				HelpDescription: strings.TrimSpace(sysHelp["mount_tune"][1]),
+				HelpSynopsis:    strings.TrimSpace(sysHelp["rekey_backup"][0]),
+				HelpDescription: strings.TrimSpace(sysHelp["rekey_backup"][0]),
 			},
 
 			&framework.Path{
@@ -186,6 +186,24 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 			},
 
 			&framework.Path{
+				Pattern: "revoke-force/(?P<prefix>.+)",
+
+				Fields: map[string]*framework.FieldSchema{
+					"prefix": &framework.FieldSchema{
+						Type:        framework.TypeString,
+						Description: strings.TrimSpace(sysHelp["revoke-force-path"][0]),
+					},
+				},
+
+				Callbacks: map[logical.Operation]framework.OperationFunc{
+					logical.UpdateOperation: b.handleRevokeForce,
+				},
+
+				HelpSynopsis:    strings.TrimSpace(sysHelp["revoke-force"][0]),
+				HelpDescription: strings.TrimSpace(sysHelp["revoke-force"][1]),
+			},
+
+			&framework.Path{
 				Pattern: "revoke-prefix/(?P<prefix>.+)",
 
 				Fields: map[string]*framework.FieldSchema{
@@ -246,6 +264,7 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 
 				Callbacks: map[logical.Operation]framework.OperationFunc{
 					logical.ReadOperation: b.handlePolicyList,
+					logical.ListOperation: b.handlePolicyList,
 				},
 
 				HelpSynopsis:    strings.TrimSpace(sysHelp["policy-list"][0]),
@@ -465,6 +484,8 @@ func (b *SystemBackend) handleMount(
 	logicalType := data.Get("type").(string)
 	description := data.Get("description").(string)
 
+	path = sanitizeMountPath(path)
+
 	var config MountConfig
 
 	var apiConfig struct {
@@ -561,6 +582,8 @@ func (b *SystemBackend) handleUnmount(
 		return logical.ErrorResponse("path cannot be blank"), logical.ErrInvalidRequest
 	}
 
+	suffix = sanitizeMountPath(suffix)
+
 	// Attempt unmount
 	if err := b.Core.unmount(suffix); err != nil {
 		b.Backend.Logger().Printf("[ERR] sys: unmount '%s' failed: %v", suffix, err)
@@ -582,6 +605,9 @@ func (b *SystemBackend) handleRemount(
 			logical.ErrInvalidRequest
 	}
 
+	fromPath = sanitizeMountPath(fromPath)
+	toPath = sanitizeMountPath(toPath)
+
 	// Attempt remount
 	if err := b.Core.remount(fromPath, toPath); err != nil {
 		b.Backend.Logger().Printf("[ERR] sys: remount '%s' to '%s' failed: %v", fromPath, toPath, err)
@@ -601,9 +627,7 @@ func (b *SystemBackend) handleMountTuneRead(
 			logical.ErrInvalidRequest
 	}
 
-	if !strings.HasSuffix(path, "/") {
-		path += "/"
-	}
+	path = sanitizeMountPath(path)
 
 	sysView := b.Core.router.MatchingSystemView(path)
 	if sysView == nil {
@@ -632,9 +656,7 @@ func (b *SystemBackend) handleMountTuneWrite(
 			logical.ErrInvalidRequest
 	}
 
-	if !strings.HasSuffix(path, "/") {
-		path += "/"
-	}
+	path = sanitizeMountPath(path)
 
 	// Prevent protected paths from being changed
 	for _, p := range untunableMounts {
@@ -732,11 +754,29 @@ func (b *SystemBackend) handleRevoke(
 // handleRevokePrefix is used to revoke a prefix with many LeaseIDs
 func (b *SystemBackend) handleRevokePrefix(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	return b.handleRevokePrefixCommon(req, data, false)
+}
+
+// handleRevokeForce is used to revoke a prefix with many LeaseIDs, ignoring errors
+func (b *SystemBackend) handleRevokeForce(
+	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	return b.handleRevokePrefixCommon(req, data, true)
+}
+
+// handleRevokePrefixCommon is used to revoke a prefix with many LeaseIDs
+func (b *SystemBackend) handleRevokePrefixCommon(
+	req *logical.Request, data *framework.FieldData, force bool) (*logical.Response, error) {
 	// Get all the options
 	prefix := data.Get("prefix").(string)
 
 	// Invoke the expiration manager directly
-	if err := b.Core.expiration.RevokePrefix(prefix); err != nil {
+	var err error
+	if force {
+		err = b.Core.expiration.RevokeForce(prefix)
+	} else {
+		err = b.Core.expiration.RevokePrefix(prefix)
+	}
+	if err != nil {
 		b.Backend.Logger().Printf("[ERR] sys: revoke prefix '%s' failed: %v", prefix, err)
 		return handleError(err)
 	}
@@ -776,6 +816,8 @@ func (b *SystemBackend) handleEnableAuth(
 			logical.ErrInvalidRequest
 	}
 
+	path = sanitizeMountPath(path)
+
 	// Create the mount entry
 	me := &MountEntry{
 		Path:        path,
@@ -799,6 +841,8 @@ func (b *SystemBackend) handleDisableAuth(
 		return logical.ErrorResponse("path cannot be blank"), logical.ErrInvalidRequest
 	}
 
+	suffix = sanitizeMountPath(suffix)
+
 	// Attempt disable
 	if err := b.Core.disableCredential(suffix); err != nil {
 		b.Backend.Logger().Printf("[ERR] sys: disable auth '%s' failed: %v", suffix, err)
@@ -815,7 +859,12 @@ func (b *SystemBackend) handlePolicyList(
 
 	// Add the special "root" policy
 	policies = append(policies, "root")
-	return logical.ListResponse(policies), err
+	resp := logical.ListResponse(policies)
+
+	// Backwords compatibility
+	resp.Data["policies"] = resp.Data["keys"]
+
+	return resp, err
 }
 
 // handlePolicyRead handles the "policy/<name>" endpoint to read a policy
@@ -883,6 +932,7 @@ func (b *SystemBackend) handleAuditTable(
 	}
 	for _, entry := range b.Core.audit.Entries {
 		info := map[string]interface{}{
+			"path":        entry.Path,
 			"type":        entry.Type,
 			"description": entry.Description,
 			"options":     entry.Options,
@@ -902,9 +952,7 @@ func (b *SystemBackend) handleAuditHash(
 		return logical.ErrorResponse("the \"input\" parameter is empty"), nil
 	}
 
-	if !strings.HasSuffix(path, "/") {
-		path += "/"
-	}
+	path = sanitizeMountPath(path)
 
 	hash, err := b.Core.auditBroker.GetHash(path, input)
 	if err != nil {
@@ -1083,6 +1131,18 @@ func (b *SystemBackend) handleRotate(
 	return nil, nil
 }
 
+func sanitizeMountPath(path string) string {
+	if !strings.HasSuffix(path, "/") {
+		path += "/"
+	}
+
+	if strings.HasPrefix(path, "/") {
+		path = path[1:]
+	}
+
+	return path
+}
+
 const sysHelpRoot = `
 The system backend is built-in to Vault and cannot be remounted or
 unmounted. It contains the paths that are used to configure Vault itself
@@ -1205,6 +1265,23 @@ all matching leases.
 		"",
 	},
 
+	"revoke-force": {
+		"Revoke all secrets generated in a given prefix, ignoring errors.",
+		`
+See the path help for 'revoke-prefix'; this behaves the same, except that it
+ignores errors encountered during revocation. This can be used in certain
+recovery situations; for instance, when you want to unmount a backend, but it
+is impossible to fix revocation errors and these errors prevent the unmount
+from proceeding. This is a DANGEROUS operation as it removes Vault's oversight
+of external secrets. Access to this prefix should be tightly controlled.
+		`,
+	},
+
+	"revoke-force-path": {
+		`The path to revoke keys under. Example: "prod/aws/ops"`,
+		"",
+	},
+
 	"auth-table": {
 		"List the currently enabled credential backends.",
 		`
@@ -1317,5 +1394,10 @@ Enable a new audit backend or disable an existing backend.
 		data going to the storage backend. The old encryption keys are kept so
 		that data encrypted using those keys can still be decrypted.
 		`,
+	},
+
+	"rekey_backup": {
+		"Allows fetching or deleting the backup of the rotated unseal keys.",
+		"",
 	},
 }
