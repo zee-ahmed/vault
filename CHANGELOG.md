@@ -1,3 +1,56 @@
+## 0.6.0 (Unreleased)
+
+SECURITY:
+
+ * Although `sys/revoke-prefix` was intended to revoke prefixes of secrets (via
+   lease IDs, which incorporate path information) and
+   `auth/token/revoke-prefix` was intended to revoke prefixes of tokens (using
+   the tokens' paths and, since 0.5.2, role information), in implementation
+   they both behaved exactly the same way since a single component in Vault is
+   responsible for managing lifetimes of both, and the type of the tracked
+   lifetime was not being checked. The end result was that either endpoint
+   could revoke both secret leases and tokens. We consider this a very minor
+   security issue as there are a number of mitigating factors: both endpoints
+   require `sudo` capability in addition to write capability, preventing
+   blanket ACL path globs from providing access; both work by using the prefix
+   to revoke as a part of the endpoint path, allowing them to be properly
+   ACL'd; and both are intended for emergency scenarios and users should
+   already not generally have access to either one. In order to prevent
+   confusion, we have simply removed `auth/token/revoke-prefix` in 0.6, and
+   `sys/revoke-prefix` will be meant for both leases and tokens instead.
+
+DEPRECATIONS/BREAKING CHANGES:
+
+ * `auth/token/revoke-prefix` has been removed. See the security notice for
+   details. [GH-1280]
+
+IMPROVEMENTS:
+
+ * command/auth: Restore the previous authenticated token if the `auth` command
+   fails to authenticate the provided token [GH-1233]
+ * command/write: `-format` and `-field` can now be used with the `write`
+   command [GH-1228]
+ * core: Don't keep lease timers around when tokens are revoked [GH-1277]
+ * credential/cert: Renewal requests are rejected if the set of policies has
+   changed since the token was issued [GH-477]
+ * secret/pki: Added `exclude_cn_from_sans` field to prevent adding the CN to
+   DNS or Email Subject Alternate Names [GH-1220]
+ * sys/capabilities: Enforce ACL checks for requests that query the capabilities
+   of a token on a given path [GH-1221]
+
+BUG FIXES:
+
+ * credential/ldap: Fix problem where certain error conditions when configuring
+   or opening LDAP connections would cause a panic instead of return a useful
+   error message [GH-1262]
+ * credential/token: Fall back to normal parent-token semantics if
+   `allowed_policies` is empty for a role. Using `allowed_policies` of
+   `default` resulted in the same behavior anyways. [GH-1276]
+ * credential/various: Fix renewal conditions when `default` policy is not
+   contained in the backend config [GH-1256]
+ * secret/pki: Don't check whether a certificate is destined to be a CA
+   certificate if sign-verbatim endpoint is used [GH-1250]
+ 
 ## 0.5.2 (March 16th, 2016)
 
 FEATURES:
@@ -6,11 +59,12 @@ FEATURES:
    on configured roles [GH-998]
  * **Token Accessors**: Vault now provides an accessor with each issued token.
    This accessor is an identifier that can be used for a limited set of
-   actions, notably for token revocation. This value is by default logged in
+   actions, notably for token revocation. This value can be logged in
    plaintext to audit logs, and in combination with the plaintext metadata
    logged to audit logs, provides a searchable and straightforward way to
-   revoke particular users' or services' tokens in many cases. At enable time,
-   audit backends can be configured to HMAC the accessor instead.
+   revoke particular users' or services' tokens in many cases. To enable
+   plaintext audit logging of these accessors, set `hmac_accessor=false` when
+   enabling an audit backend.
  * **Token Credential Backend Roles**: Roles can now be created in the `token`
    credential backend that allow modifying token behavior in ways that are not
    otherwise exposed or easily delegated. This allows creating tokens with a
@@ -22,6 +76,7 @@ FEATURES:
    SIGHUP.
 
 IMPROVEMENTS:
+
  * auth/token: Endpoints optionally accept tokens from the HTTP body rather
    than just from the URLs [GH-1211]
  * auth/token,sys/capabilities: Added new endpoints
