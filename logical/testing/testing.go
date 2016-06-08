@@ -9,11 +9,16 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/http"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/physical"
 	"github.com/hashicorp/vault/vault"
+)
+
+var (
+	logger = log.New(os.Stderr, "", log.LstdFlags)
 )
 
 // TestEnvVar must be set to a non-empty value for acceptance tests to run.
@@ -67,7 +72,7 @@ type TestStep struct {
 	Check TestCheckFunc
 
 	// PreFlight is called directly before execution of the request, allowing
-	// modification of the request paramters (e.g. Path) with dynamic values.
+	// modification of the request parameters (e.g. Path) with dynamic values.
 	PreFlight PreFlightFunc
 
 	// ErrorOk, if true, will let erroneous responses through to the check
@@ -131,7 +136,7 @@ func Test(t TestT, c TestCase) {
 
 	// Create an in-memory Vault core
 	core, err := vault.NewCore(&vault.CoreConfig{
-		Physical: physical.NewInmem(),
+		Physical: physical.NewInmem(logger),
 		LogicalBackends: map[string]logical.Factory{
 			"test": func(conf *logical.BackendConfig) (logical.Backend, error) {
 				if c.Backend != nil {
@@ -298,8 +303,10 @@ func Test(t TestT, c TestCase) {
 	if err == nil && resp.IsError() {
 		err = fmt.Errorf("Erroneous response:\n\n%#v", resp)
 	}
-	if err != nil && err != logical.ErrUnsupportedOperation {
-		t.Error(fmt.Sprintf("[ERR] Rollback error: %s", err))
+	if err != nil {
+		if !errwrap.Contains(err, logical.ErrUnsupportedOperation.Error()) {
+			t.Error(fmt.Sprintf("[ERR] Rollback error: %s", err))
+		}
 	}
 
 	// If we have any failed revokes, log it.

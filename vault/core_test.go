@@ -1,10 +1,13 @@
 package vault
 
 import (
+	"log"
+	"os"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/audit"
 	"github.com/hashicorp/vault/logical"
@@ -17,9 +20,10 @@ var (
 )
 
 func TestNewCore_badAdvertiseAddr(t *testing.T) {
+	logger = log.New(os.Stderr, "", log.LstdFlags)
 	conf := &CoreConfig{
 		AdvertiseAddr: "127.0.0.1:8200",
-		Physical:      physical.NewInmem(),
+		Physical:      physical.NewInmem(logger),
 		DisableMlock:  true,
 	}
 	_, err := NewCore(conf)
@@ -381,7 +385,7 @@ func TestCore_HandleRequest_MissingToken(t *testing.T) {
 		},
 	}
 	resp, err := c.HandleRequest(req)
-	if err != logical.ErrInvalidRequest {
+	if err == nil || !errwrap.Contains(err, logical.ErrInvalidRequest.Error()) {
 		t.Fatalf("err: %v", err)
 	}
 	if resp.Data["error"] != "missing client token" {
@@ -402,7 +406,7 @@ func TestCore_HandleRequest_InvalidToken(t *testing.T) {
 		ClientToken: "foobarbaz",
 	}
 	resp, err := c.HandleRequest(req)
-	if err != logical.ErrPermissionDenied {
+	if err == nil || !errwrap.Contains(err, logical.ErrPermissionDenied.Error()) {
 		t.Fatalf("err: %v", err)
 	}
 	if resp.Data["error"] != "permission denied" {
@@ -439,7 +443,7 @@ func TestCore_HandleRequest_RootPath(t *testing.T) {
 		ClientToken: "child",
 	}
 	resp, err := c.HandleRequest(req)
-	if err != logical.ErrPermissionDenied {
+	if err == nil || !errwrap.Contains(err, logical.ErrPermissionDenied.Error()) {
 		t.Fatalf("err: %v, resp: %v", err, resp)
 	}
 }
@@ -496,7 +500,7 @@ func TestCore_HandleRequest_PermissionDenied(t *testing.T) {
 		ClientToken: "child",
 	}
 	resp, err := c.HandleRequest(req)
-	if err != logical.ErrPermissionDenied {
+	if err == nil || !errwrap.Contains(err, logical.ErrPermissionDenied.Error()) {
 		t.Fatalf("err: %v, resp: %v", err, resp)
 	}
 }
@@ -944,15 +948,16 @@ func TestCore_LimitedUseToken(t *testing.T) {
 
 	// Second operation should fail
 	_, err = c.HandleRequest(req)
-	if err != logical.ErrPermissionDenied {
+	if err == nil || !errwrap.Contains(err, logical.ErrPermissionDenied.Error()) {
 		t.Fatalf("err: %v", err)
 	}
 }
 
 func TestCore_Standby_Seal(t *testing.T) {
 	// Create the first core and initialize it
-	inm := physical.NewInmem()
-	inmha := physical.NewInmemHA()
+	logger = log.New(os.Stderr, "", log.LstdFlags)
+	inm := physical.NewInmem(logger)
+	inmha := physical.NewInmemHA(logger)
 	advertiseOriginal := "http://127.0.0.1:8200"
 	core, err := NewCore(&CoreConfig{
 		Physical:      inm,
@@ -1056,8 +1061,9 @@ func TestCore_Standby_Seal(t *testing.T) {
 
 func TestCore_StepDown(t *testing.T) {
 	// Create the first core and initialize it
-	inm := physical.NewInmem()
-	inmha := physical.NewInmemHA()
+	logger = log.New(os.Stderr, "", log.LstdFlags)
+	inm := physical.NewInmem(logger)
+	inmha := physical.NewInmemHA(logger)
 	advertiseOriginal := "http://127.0.0.1:8200"
 	core, err := NewCore(&CoreConfig{
 		Physical:      inm,
@@ -1142,14 +1148,19 @@ func TestCore_StepDown(t *testing.T) {
 		t.Fatalf("Bad advertise: %v", advertise)
 	}
 
+	req := &logical.Request{
+		ClientToken: root,
+		Path:        "sys/step-down",
+	}
+
 	// Step down core
-	err = core.StepDown(root)
+	err = core.StepDown(req)
 	if err != nil {
 		t.Fatal("error stepping down core 1")
 	}
 
 	// Give time to switch leaders
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	// Core1 should be in standby
 	standby, err = core.Standby()
@@ -1185,7 +1196,7 @@ func TestCore_StepDown(t *testing.T) {
 	}
 
 	// Step down core2
-	err = core2.StepDown(root)
+	err = core2.StepDown(req)
 	if err != nil {
 		t.Fatal("error stepping down core 1")
 	}
@@ -1230,8 +1241,9 @@ func TestCore_StepDown(t *testing.T) {
 
 func TestCore_CleanLeaderPrefix(t *testing.T) {
 	// Create the first core and initialize it
-	inm := physical.NewInmem()
-	inmha := physical.NewInmemHA()
+	logger = log.New(os.Stderr, "", log.LstdFlags)
+	inm := physical.NewInmem(logger)
+	inmha := physical.NewInmemHA(logger)
 	advertiseOriginal := "http://127.0.0.1:8200"
 	core, err := NewCore(&CoreConfig{
 		Physical:      inm,
@@ -1386,12 +1398,14 @@ func TestCore_CleanLeaderPrefix(t *testing.T) {
 }
 
 func TestCore_Standby(t *testing.T) {
-	inmha := physical.NewInmemHA()
+	logger = log.New(os.Stderr, "", log.LstdFlags)
+	inmha := physical.NewInmemHA(logger)
 	testCore_Standby_Common(t, inmha, inmha)
 }
 
 func TestCore_Standby_SeparateHA(t *testing.T) {
-	testCore_Standby_Common(t, physical.NewInmemHA(), physical.NewInmemHA())
+	logger = log.New(os.Stderr, "", log.LstdFlags)
+	testCore_Standby_Common(t, physical.NewInmemHA(logger), physical.NewInmemHA(logger))
 }
 
 func testCore_Standby_Common(t *testing.T, inm physical.Backend, inmha physical.HABackend) {
@@ -1925,8 +1939,9 @@ func testWaitActive(t *testing.T, core *Core) {
 
 func TestCore_Standby_Rotate(t *testing.T) {
 	// Create the first core and initialize it
-	inm := physical.NewInmem()
-	inmha := physical.NewInmemHA()
+	logger = log.New(os.Stderr, "", log.LstdFlags)
+	inm := physical.NewInmem(logger)
+	inmha := physical.NewInmemHA(logger)
 	advertiseOriginal := "http://127.0.0.1:8200"
 	core, err := NewCore(&CoreConfig{
 		Physical:      inm,

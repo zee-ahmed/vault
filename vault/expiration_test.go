@@ -722,7 +722,7 @@ func TestExpiration_revokeEntry_token(t *testing.T) {
 
 	indexEntry, err := exp.indexByToken(le.ClientToken, le.LeaseID)
 	if err != nil {
-		t.Fatalf("err: %v")
+		t.Fatalf("err: %v", err)
 	}
 	if indexEntry == nil {
 		t.Fatalf("err: should have found a secondary index entry")
@@ -743,7 +743,7 @@ func TestExpiration_revokeEntry_token(t *testing.T) {
 
 	indexEntry, err = exp.indexByToken(le.ClientToken, le.LeaseID)
 	if err != nil {
-		t.Fatalf("err: %v")
+		t.Fatalf("err: %v", err)
 	}
 	if indexEntry != nil {
 		t.Fatalf("err: should not have found a secondary index entry")
@@ -965,8 +965,9 @@ func TestExpiration_RevokeForce(t *testing.T) {
 
 	core.logicalBackends["badrenew"] = badRenewFactory
 	me := &MountEntry{
-		Path: "badrenew/",
-		Type: "badrenew",
+		Table: mountTableType,
+		Path:  "badrenew/",
+		Type:  "badrenew",
 	}
 
 	err := core.mount(me)

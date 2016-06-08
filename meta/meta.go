@@ -3,17 +3,14 @@ package meta
 import (
 	"bufio"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
-	"path/filepath"
 
 	"github.com/hashicorp/errwrap"
+	"github.com/hashicorp/go-rootcerts"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/command/token"
 	"github.com/mitchellh/cli"
@@ -46,10 +43,19 @@ type Meta struct {
 	flagCAPath     string
 	flagClientCert string
 	flagClientKey  string
+	flagWrapTTL    string
 	flagInsecure   bool
 
 	// Queried if no token can be found
 	TokenHelper TokenHelperFunc
+}
+
+func (m *Meta) DefaultWrappingLookupFunc(operation, path string) string {
+	if m.flagWrapTTL != "" {
+		return m.flagWrapTTL
+	}
+
+	return os.Getenv(api.EnvVaultWrapTTL)
 }
 
 // Client returns the API client to a Vault server given the configured
@@ -74,20 +80,14 @@ func (m *Meta) Client() (*api.Client, error) {
 		// existing TLS config
 		tlsConfig := config.HttpClient.Transport.(*http.Transport).TLSClientConfig
 
-		var certPool *x509.CertPool
-		var err error
-		if m.flagCACert != "" {
-			certPool, err = api.LoadCACert(m.flagCACert)
-		} else if m.flagCAPath != "" {
-			certPool, err = api.LoadCAPath(m.flagCAPath)
+		rootConfig := &rootcerts.Config{
+			CAFile: m.flagCACert,
+			CAPath: m.flagCAPath,
 		}
-		if err != nil {
-			return nil, errwrap.Wrapf("Error setting up CA path: {{err}}", err)
+		if err := rootcerts.ConfigureTLS(tlsConfig, rootConfig); err != nil {
+			return nil, err
 		}
 
-		if certPool != nil {
-			tlsConfig.RootCAs = certPool
-		}
 		if m.flagInsecure {
 			tlsConfig.InsecureSkipVerify = true
 		}
@@ -108,6 +108,8 @@ func (m *Meta) Client() (*api.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	client.SetWrappingLookupFunc(m.DefaultWrappingLookupFunc)
 
 	// If we have a token directly, then set that
 	token := m.ClientToken
@@ -155,6 +157,7 @@ func (m *Meta) FlagSet(n string, fs FlagSetFlags) *flag.FlagSet {
 		f.StringVar(&m.flagCAPath, "ca-path", "", "")
 		f.StringVar(&m.flagClientCert, "client-cert", "", "")
 		f.StringVar(&m.flagClientKey, "client-key", "", "")
+		f.StringVar(&m.flagWrapTTL, "wrap-ttl", "", "")
 		f.BoolVar(&m.flagInsecure, "insecure", false, "")
 		f.BoolVar(&m.flagInsecure, "tls-skip-verify", false, "")
 	}
@@ -175,74 +178,7 @@ func (m *Meta) FlagSet(n string, fs FlagSetFlags) *flag.FlagSet {
 	return f
 }
 
-func (m *Meta) loadCACert(path string) (*x509.CertPool, error) {
-	certs, err := m.loadCertFromPEM(path)
-	if err != nil {
-		return nil, fmt.Errorf("Error loading %s: %s", path, err)
-	}
-
-	result := x509.NewCertPool()
-	for _, cert := range certs {
-		result.AddCert(cert)
-	}
-
-	return result, nil
-}
-
-func (m *Meta) loadCAPath(path string) (*x509.CertPool, error) {
-	result := x509.NewCertPool()
-	fn := func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		certs, err := m.loadCertFromPEM(path)
-		if err != nil {
-			return fmt.Errorf("Error loading %s: %s", path, err)
-		}
-
-		for _, cert := range certs {
-			result.AddCert(cert)
-		}
-		return nil
-	}
-
-	return result, filepath.Walk(path, fn)
-}
-
-func (m *Meta) loadCertFromPEM(path string) ([]*x509.Certificate, error) {
-	pemCerts, err := ioutil.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	certs := make([]*x509.Certificate, 0, 5)
-	for len(pemCerts) > 0 {
-		var block *pem.Block
-		block, pemCerts = pem.Decode(pemCerts)
-		if block == nil {
-			break
-		}
-		if block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
-			continue
-		}
-
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-
-		certs = append(certs, cert)
-	}
-
-	return certs, nil
-}
-
-// GeneralOptionsUsage returns the usage documenation for commonly
+// GeneralOptionsUsage returns the usage documentation for commonly
 // available options
 func GeneralOptionsUsage() string {
 	general := `
@@ -255,7 +191,7 @@ func GeneralOptionsUsage() string {
 
   -ca-path=path           Path to a directory of PEM encoded CA cert files
                           to verify the Vault server SSL certificate. If both
-                          -ca-cert and -ca-path are specified, -ca-path is used.
+                          -ca-cert and -ca-path are specified, -ca-cert is used.
                           Overrides the VAULT_CAPATH environment variable if set.
 
   -client-cert=path       Path to a PEM encoded client certificate for TLS
@@ -272,5 +208,7 @@ func GeneralOptionsUsage() string {
                           not recommended. Verification will also be skipped
                           if VAULT_SKIP_VERIFY is set.
 `
+
+	general += AdditionalOptionsUsage()
 	return general
 }

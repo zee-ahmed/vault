@@ -50,9 +50,9 @@ sending a SIGHUP to the server process. These are denoted below.
   "tcp" is currently the only option available. A full reference for the
    inner syntax is below.
 
-* `disable_cache` (optional) - A boolean. If true, this will disable the
-  read cache used by the physical storage subsystem. This will very
-  significantly impact performance.
+* `disable_cache` (optional) - A boolean. If true, this will disable all caches
+  within Vault, including the read cache used by the physical storage
+  subsystem. This will very significantly impact performance.
 
 * `disable_mlock` (optional) - A boolean. If true, this will disable the
   server from executing the `mlock` syscall to prevent memory from being
@@ -102,7 +102,10 @@ The supported options are:
       by default that TLS will be used.
 
   * `tls_cert_file` (required unless disabled) - The path to the certificate
-      for TLS. This is reloaded via SIGHUP.
+      for TLS. To configure the listener to use a CA certificate, concatenate
+      the primary certificate and the CA certificate together. The primary
+      certificate should appear first in the combined file. This is reloaded
+      via SIGHUP.
 
   * `tls_key_file` (required unless disabled) - The path to the private key
       for the certificate. This is reloaded via SIGHUP.
@@ -157,6 +160,9 @@ to help you, but may refer you to the backend author.
   * `s3` - Store data within an S3 bucket [S3](https://aws.amazon.com/s3/).
     This backend does not support HA. This is a community-supported backend.
 
+  * `azure` - Store data in an Azure Storage container [Azure](https://azure.microsoft.com/en-us/services/storage/).
+    This backend does not support HA. This is a community-supported backend.
+
   * `mysql` - Store data within MySQL. This backend does not support HA. This
     is a community-supported backend.
 
@@ -182,7 +188,7 @@ All backends support the following options:
     nodes to when A is the active node and B and C are standby nodes. This may
     be the same address across nodes if using a load balancer or service
     discovery. Most HA backends will attempt to determine the advertise address
-    if not provided.  This can also be set via the `VAULT_ADVERTISE_ADDR`
+    if not provided.  This can also be overridden via the `VAULT_ADVERTISE_ADDR`
     environment variable.
 
 #### Backend Reference: Consul
@@ -196,6 +202,15 @@ For Consul, the following options are supported:
     Defaults to the local agent address, if available.
 
   * `scheme` (optional) - "http" or "https" for talking to Consul.
+
+  * `check_timeout` (optional) - The check interval used to send health check
+    information to Consul.  Defaults to "5s".
+
+  * `disable_registration` (optional) - If true, then Vault will not register
+    itself with Consul.  Defaults to "false".
+
+  * `service` (optional) - The name of the service to register with Consul.
+    Defaults to "vault".
 
   * `token` (optional) - An access token to use to write data to Consul.
 
@@ -223,6 +238,86 @@ settings](https://www.consul.io/docs/agent/encryption.html):
     communication.  Set accordingly to the
     [key_file](https://www.consul.io/docs/agent/options.html#key_file) setting
     in Consul.
+
+```
+// Sample Consul Backend configuration with local Consul Agent
+backend "consul" {
+  // address MUST match Consul's `addresses.http` config value (or
+  // `addresses.https` depending on the scheme provided below).
+  address = "127.0.0.1:8500"
+  #address = "unix:///tmp/.consul.http.sock"
+
+  // scheme defaults to "http" (suitable for loopback and UNIX sockets), but
+  // should be "https" when Consul exists on a remote node (a non-standard
+  // deployment).  All decryption happen within Vault so this value does not
+  // change Vault's Threat Model.
+  scheme = "http"
+
+  // token is a Consul ACL Token that has write privileges to the path
+  // specified below.  Use of a Consul ACL Token is a best pracitce.
+  token = "[redacted]" // Vault's Consul ACL Token
+
+  // path must be writable by the Consul ACL Token
+  path = "vault/"
+}
+```
+
+Once properly configured, an unsealed Vault installation should be available
+on the network at `active.vault.service.consul`. Unsealed Vault instances in
+the standby state are available at `standby.vault.service.consul`.  All
+unsealed Vault instances are available as healthy in the
+`vault.service.consul` pool.  Sealed Vault instances will mark themselves as
+critical to avoid showing up by default in Consul's service discovery.
+
+```
+% dig active.vault.service.consul srv
+; <<>> DiG 9.8.3-P1 <<>> active.vault.service.consul srv
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 11331
+;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+;; WARNING: recursion requested but not available
+
+;; QUESTION SECTION:
+;active.vault.service.consul.   IN      SRV
+
+;; ANSWER SECTION:
+active.vault.service.consul. 0  IN      SRV     1 1 8200 vault1.node.dc1.consul.
+
+;; ADDITIONAL SECTION:
+vault1.node.dc1.consul.      0  IN      A       172.17.33.46
+
+;; Query time: 0 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1)
+;; WHEN: Sat Apr 23 17:33:14 2016
+;; MSG SIZE  rcvd: 172
+% dig +short standby.vault.service.consul srv
+1 1 8200 vault3.node.dc1.consul.
+1 1 8200 vault2.node.dc1.consul.
+% dig +short vault.service.consul srv
+1 1 8200 vault3.node.dc1.consul.
+1 1 8200 vault1.node.dc1.consul.
+1 1 8200 vault2.node.dc1.consul.
+% dig +short vault.service.consul a
+172.17.33.46
+172.17.34.32
+172.17.35.29
+vault1% vault seal
+% dig +short vault.service.consul srv
+1 1 8200 vault3.node.dc1.consul.
+1 1 8200 vault2.node.dc1.consul.
+vault1% vault unseal
+Key (will be hidden):
+Sealed: false
+Key Shares: 5
+Key Threshold: 3
+Unseal Progress: 0
+% dig +short vault.service.consul srv
+1 1 8200 vault1.node.dc1.consul.
+1 1 8200 vault3.node.dc1.consul.
+1 1 8200 vault2.node.dc1.consul.
+```
 
 #### Backend Reference: etcd (Community-Supported)
 
@@ -287,7 +382,7 @@ The following optional settings can be used to configure zNode ACLs:
 If neither of these is set, the backend will not authenticate with Zookeeper
 and will set the OPEN_ACL_UNSAFE ACL on all nodes. In this scenario, anyone
 connected to Zookeeper could change Vault’s znodes and, potentially, take Vault
-out of service. 
+out of service.
 
 Some sample configurations:
 
@@ -331,7 +426,7 @@ The DynamoDB backend has the following options:
 
   * `endpoint` - (optional) An alternative (AWS compatible) DynamoDB endpoint to use. It can also be sourced from the `AWS_DYNAMODB_ENDPOINT` environment variable.
 
-  * `region` (optional) - The AWS region. It can be sourced from the `AWS_DEFAULT_REGION` environment variable and will default to "us-east-1" if not specified.
+  * `region` (optional) - The AWS region. It can be sourced from the `AWS_DEFAULT_REGION` environment variable and will default to `us-east-1` if not specified.
 
   * `recovery_mode` (optional) - When the Vault leader crashes or is killed without being able to shut down properly, no other node can become the new leader because the DynamoDB table still holds the old leader's lock record. To recover from this situation, one can start a single Vault node with this option set to `1` and the node will remove the old lock from DynamoDB. It is important that only one node is running in recovery mode! After this node has become the leader, other nodes can be started with regular configuration.
     This option can also be provided via the environment variable `RECOVERY_MODE`.
@@ -356,7 +451,7 @@ For S3, the following options are supported:
 
   * `endpoint` - (optional) An alternative (AWS compatible) S3 endpoint to use. It can also be sourced from the `AWS_S3_ENDPOINT` environment variable.
 
-  * `region` (optional) - The AWS region. It can be sourced from the `AWS_DEFAULT_REGION` environment variable and will default to "us-east-1" if not specified.
+  * `region` (optional) - The AWS region. It can be sourced from the `AWS_DEFAULT_REGION` environment variable and will default to `us-east-1` if not specified.
 
 If you are running your Vault server on an EC2 instance, you can also make use
 of the EC2 instance profile service to provide the credentials Vault will use to
@@ -364,6 +459,14 @@ make S3 API calls.  Leaving the `access_key` and `secret_key` fields empty
 will cause Vault to attempt to retrieve credentials from the metadata service.
 You are responsible for ensuring your instance is launched with the appropriate
 profile enabled. Vault will handle renewing profile credentials as they rotate.
+
+#### Backend Reference: Azure (Community-Supported)
+
+  * `accountName` (required) - The Azure Storage account name
+  * `accountKey`  (required) - The Azure Storage account key
+  * `container`   (required) - The Azure Storage Blob container name
+
+The current implementation is limited to a maximum of 4 MBytes per blob/file. 
 
 #### Backend Reference: MySQL (Community-Supported)
 
@@ -390,7 +493,7 @@ The PostgreSQL backend has the following options:
 
     Examples:
 
-    * postgres://username:password@localhost:5432/database?sslmode=disabled
+    * postgres://username:password@localhost:5432/database?sslmode=disable
 
     * postgres://username:password@localhost:5432/database?sslmode=verify-full
 

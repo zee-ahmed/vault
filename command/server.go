@@ -44,6 +44,8 @@ type ServerCommand struct {
 
 	meta.Meta
 
+	logger *log.Logger
+
 	ReloadFuncs map[string][]server.ReloadFunc
 }
 
@@ -63,11 +65,11 @@ func (c *ServerCommand) Run(args []string) int {
 		return 1
 	}
 
-	if os.Getenv("VAULT_DEV_ROOT_TOKEN_ID") != "" {
+	if os.Getenv("VAULT_DEV_ROOT_TOKEN_ID") != "" && devRootTokenID == "" {
 		devRootTokenID = os.Getenv("VAULT_DEV_ROOT_TOKEN_ID")
 	}
 
-	if os.Getenv("VAULT_DEV_LISTEN_ADDRESS") != "" {
+	if os.Getenv("VAULT_DEV_LISTEN_ADDRESS") != "" && devListenAddress == "" {
 		devListenAddress = os.Getenv("VAULT_DEV_LISTEN_ADDRESS")
 	}
 
@@ -136,7 +138,7 @@ func (c *ServerCommand) Run(args []string) int {
 	// Create a logger. We wrap it in a gated writer so that it doesn't
 	// start logging too early.
 	logGate := &gatedwriter.Writer{Writer: os.Stderr}
-	logger := log.New(&logutils.LevelFilter{
+	c.logger = log.New(&logutils.LevelFilter{
 		Levels: []logutils.LogLevel{
 			"TRACE", "DEBUG", "INFO", "WARN", "ERR"},
 		MinLevel: logutils.LogLevel(strings.ToUpper(logLevel)),
@@ -150,7 +152,7 @@ func (c *ServerCommand) Run(args []string) int {
 
 	// Initialize the backend
 	backend, err := physical.NewBackend(
-		config.Backend.Type, config.Backend.Config)
+		config.Backend.Type, c.logger, config.Backend.Config)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf(
 			"Error initializing backend of type %s: %s",
@@ -163,6 +165,14 @@ func (c *ServerCommand) Run(args []string) int {
 
 	var seal vault.Seal = &vault.DefaultSeal{}
 
+	// Ensure that the seal finalizer is called, even if using verify-only
+	defer func() {
+		err = seal.Finalize()
+		if err != nil {
+			c.Ui.Error(fmt.Sprintf("Error finalizing seals: %v", err))
+		}
+	}()
+
 	coreConfig := &vault.CoreConfig{
 		Physical:           backend,
 		AdvertiseAddr:      config.Backend.AdvertiseAddr,
@@ -171,7 +181,7 @@ func (c *ServerCommand) Run(args []string) int {
 		AuditBackends:      c.AuditBackends,
 		CredentialBackends: c.CredentialBackends,
 		LogicalBackends:    c.LogicalBackends,
-		Logger:             logger,
+		Logger:             c.logger,
 		DisableCache:       config.DisableCache,
 		DisableMlock:       config.DisableMlock,
 		MaxLeaseTTL:        config.MaxLeaseTTL,
@@ -182,7 +192,7 @@ func (c *ServerCommand) Run(args []string) int {
 	var ok bool
 	if config.HABackend != nil {
 		habackend, err := physical.NewBackend(
-			config.HABackend.Type, config.HABackend.Config)
+			config.HABackend.Type, c.logger, config.HABackend.Config)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf(
 				"Error initializing backend of type %s: %s",
@@ -205,7 +215,7 @@ func (c *ServerCommand) Run(args []string) int {
 		coreConfig.AdvertiseAddr = envAA
 	}
 
-	// Attempt to detect the advertise address possible
+	// Attempt to detect the advertise address, if possible
 	var detect physical.AdvertiseDetect
 	if coreConfig.HAPhysical != nil {
 		detect, ok = coreConfig.HAPhysical.(physical.AdvertiseDetect)
@@ -286,10 +296,35 @@ func (c *ServerCommand) Run(args []string) int {
 		}
 	}
 
+	// If the backend supports service discovery, run service discovery
+	if coreConfig.HAPhysical != nil {
+		sd, ok := coreConfig.HAPhysical.(physical.ServiceDiscovery)
+		if ok {
+			activeFunc := func() bool {
+				if isLeader, _, err := core.Leader(); err == nil {
+					return isLeader
+				}
+				return false
+			}
+
+			sealedFunc := func() bool {
+				if sealed, err := core.Sealed(); err == nil {
+					return sealed
+				}
+				return true
+			}
+
+			if err := sd.RunServiceDiscovery(c.ShutdownCh, coreConfig.AdvertiseAddr, activeFunc, sealedFunc); err != nil {
+				c.Ui.Error(fmt.Sprintf("Error initializing service discovery: %v", err))
+				return 1
+			}
+		}
+	}
+
 	// Initialize the listeners
 	lns := make([]net.Listener, 0, len(config.Listeners))
 	for i, lnConfig := range config.Listeners {
-		ln, props, reloadFunc, err := server.NewListener(lnConfig.Type, lnConfig.Config)
+		ln, props, reloadFunc, err := server.NewListener(lnConfig.Type, lnConfig.Config, logGate)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf(
 				"Error initializing listener of type %s: %s",
@@ -318,6 +353,13 @@ func (c *ServerCommand) Run(args []string) int {
 		}
 	}
 
+	// Make sure we close all listeners from this point on
+	defer func() {
+		for _, ln := range lns {
+			ln.Close()
+		}
+	}()
+
 	infoKeys = append(infoKeys, "version")
 	info["version"] = version.GetVersion().String()
 
@@ -335,9 +377,6 @@ func (c *ServerCommand) Run(args []string) int {
 	c.Ui.Output("")
 
 	if verifyOnly {
-		for _, listener := range lns {
-			listener.Close()
-		}
 		return 0
 	}
 
@@ -376,6 +415,7 @@ func (c *ServerCommand) Run(args []string) int {
 			}
 		}
 	}
+
 	return 0
 }
 
@@ -656,15 +696,15 @@ General Options:
 
 // MakeShutdownCh returns a channel that can be used for shutdown
 // notifications for commands. This channel will send a message for every
-// interrupt or SIGTERM received.
+// SIGINT or SIGTERM received.
 func MakeShutdownCh() chan struct{} {
 	resultCh := make(chan struct{})
 
-	signalCh := make(chan os.Signal, 4)
-	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	shutdownCh := make(chan os.Signal, 4)
+	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		for {
-			<-signalCh
+			<-shutdownCh
 			resultCh <- struct{}{}
 		}
 	}()
@@ -678,7 +718,7 @@ func MakeSighupCh() chan struct{} {
 	resultCh := make(chan struct{})
 
 	signalCh := make(chan os.Signal, 4)
-	signal.Notify(signalCh, os.Interrupt, syscall.SIGHUP)
+	signal.Notify(signalCh, syscall.SIGHUP)
 	go func() {
 		for {
 			<-signalCh

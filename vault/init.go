@@ -35,8 +35,9 @@ func (c *Core) Initialized() (bool, error) {
 		return false, err
 	}
 	if sealConf == nil {
-		return false, nil
+		return false, fmt.Errorf("[ERR] core: barrier reports initialized but no seal configuration found")
 	}
+
 	return true, nil
 }
 
@@ -84,46 +85,22 @@ func (c *Core) Initialize(barrierConfig, recoveryConfig *SealConfig) (*InitResul
 			return nil, fmt.Errorf("recovery configuration must be supplied")
 		}
 
-		if recoveryConfig.SecretShares == 0 {
-			return nil, fmt.Errorf("recovery configuration must specify a positive number of shares, or a negative number to disable")
+		if recoveryConfig.SecretShares < 1 {
+			return nil, fmt.Errorf("recovery configuration must specify a positive number of shares")
 		}
-		if recoveryConfig.SecretShares > 0 {
-			// Check if the seal configuraiton is valid
-			if err := recoveryConfig.Validate(); err != nil {
-				c.logger.Printf("[ERR] core: invalid recovery configuration: %v", err)
-				return nil, fmt.Errorf("invalid recovery configuration: %v", err)
-			}
+
+		// Check if the seal configuration is valid
+		if err := recoveryConfig.Validate(); err != nil {
+			c.logger.Printf("[ERR] core: invalid recovery configuration: %v", err)
+			return nil, fmt.Errorf("invalid recovery configuration: %v", err)
 		}
 	}
 
-	if c.seal.StoredKeysSupported() {
-		if barrierConfig.SecretShares != 1 {
-			return nil, fmt.Errorf("secret shares must be 1")
-		}
-		if barrierConfig.SecretThreshold != barrierConfig.SecretShares {
-			return nil, fmt.Errorf("secret threshold must be same as secret shares")
-		}
-		if barrierConfig.StoredShares != barrierConfig.SecretShares {
-			return nil, fmt.Errorf("stored shares must be same as secret shares")
-		}
-		if barrierConfig.PGPKeys != nil && len(barrierConfig.PGPKeys) > 0 {
-			return nil, fmt.Errorf("PGP keys not supported when storing shares")
-		}
-	} else {
-		if barrierConfig.StoredShares > 0 {
-			return nil, fmt.Errorf("stored keys are not supported")
-		}
-	}
-
-	// Check if the seal configuraiton is valid
+	// Check if the seal configuration is valid
 	if err := barrierConfig.Validate(); err != nil {
 		c.logger.Printf("[ERR] core: invalid seal configuration: %v", err)
 		return nil, fmt.Errorf("invalid seal configuration: %v", err)
 	}
-
-	// We defer this now because the unseal operation locks the state lock, and
-	// defer operations are LIFO
-	defer c.unsealWithStoredKeys()
 
 	// Avoid an initialization race
 	c.stateLock.Lock()
@@ -174,31 +151,6 @@ func (c *Core) Initialize(barrierConfig, recoveryConfig *SealConfig) (*InitResul
 		SecretShares: barrierUnsealKeys,
 	}
 
-	// Save the configuration regardless, but only generate a key if it's not
-	// disabled
-	if c.seal.RecoveryKeySupported() {
-		err = c.seal.SetRecoveryConfig(recoveryConfig)
-		if err != nil {
-			c.logger.Printf("[ERR] core: failed to save recovery configuration: %v", err)
-			return nil, fmt.Errorf("recovery configuration saving failed: %v", err)
-		}
-
-		if recoveryConfig.SecretShares > 0 {
-			recoveryKey, recoveryUnsealKeys, err := c.generateShares(recoveryConfig)
-			if err != nil {
-				c.logger.Printf("[ERR] core: %v", err)
-				return nil, err
-			}
-
-			err = c.seal.SetRecoveryKey(recoveryKey)
-			if err != nil {
-				return nil, err
-			}
-
-			results.RecoveryShares = recoveryUnsealKeys
-		}
-	}
-
 	// Initialize the barrier
 	if err := c.barrier.Initialize(barrierKey); err != nil {
 		c.logger.Printf("[ERR] core: failed to initialize barrier: %v", err)
@@ -226,6 +178,32 @@ func (c *Core) Initialize(barrierConfig, recoveryConfig *SealConfig) (*InitResul
 		return nil, err
 	}
 
+	// Save the configuration regardless, but only generate a key if it's not
+	// disabled. When using recovery keys they are stored in the barrier, so
+	// this must happen post-unseal.
+	if c.seal.RecoveryKeySupported() {
+		err = c.seal.SetRecoveryConfig(recoveryConfig)
+		if err != nil {
+			c.logger.Printf("[ERR] core: failed to save recovery configuration: %v", err)
+			return nil, fmt.Errorf("recovery configuration saving failed: %v", err)
+		}
+
+		if recoveryConfig.SecretShares > 0 {
+			recoveryKey, recoveryUnsealKeys, err := c.generateShares(recoveryConfig)
+			if err != nil {
+				c.logger.Printf("[ERR] core: %v", err)
+				return nil, err
+			}
+
+			err = c.seal.SetRecoveryKey(recoveryKey)
+			if err != nil {
+				return nil, err
+			}
+
+			results.RecoveryShares = recoveryUnsealKeys
+		}
+	}
+
 	// Generate a new root token
 	rootToken, err := c.tokenStore.rootToken()
 	if err != nil {
@@ -244,8 +222,17 @@ func (c *Core) Initialize(barrierConfig, recoveryConfig *SealConfig) (*InitResul
 	return results, nil
 }
 
-func (c *Core) unsealWithStoredKeys() error {
+func (c *Core) UnsealWithStoredKeys() error {
 	if !c.seal.StoredKeysSupported() {
+		return nil
+	}
+
+	sealed, err := c.Sealed()
+	if err != nil {
+		c.logger.Printf("[ERR] core: error checking sealed status in auto-unseal: %s", err)
+		return fmt.Errorf("error checking sealed status in auto-unseal: %s", err)
+	}
+	if !sealed {
 		return nil
 	}
 

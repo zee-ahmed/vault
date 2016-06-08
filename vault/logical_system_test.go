@@ -3,6 +3,7 @@ package vault
 import (
 	"crypto/sha256"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -609,8 +610,8 @@ func TestSystemBackend_policyList(t *testing.T) {
 	}
 
 	exp := map[string]interface{}{
-		"keys":     []string{"default", "root"},
-		"policies": []string{"default", "root"},
+		"keys":     []string{"cubbyhole-response-wrapping", "default", "root"},
+		"policies": []string{"cubbyhole-response-wrapping", "default", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -662,8 +663,8 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 	}
 
 	exp = map[string]interface{}{
-		"keys":     []string{"default", "foo", "root"},
-		"policies": []string{"default", "foo", "root"},
+		"keys":     []string{"cubbyhole-response-wrapping", "default", "foo", "root"},
+		"policies": []string{"cubbyhole-response-wrapping", "default", "foo", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -697,8 +698,8 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 	}
 
 	exp = map[string]interface{}{
-		"keys":     []string{"default", "root"},
-		"policies": []string{"default", "root"},
+		"keys":     []string{"cubbyhole-response-wrapping", "default", "root"},
+		"policies": []string{"cubbyhole-response-wrapping", "default", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -739,7 +740,7 @@ func TestSystemBackend_auditHash(t *testing.T) {
 			HMACType: "hmac-sha256",
 		})
 		if err != nil {
-			t.Fatal("error getting new salt: %v", err)
+			t.Fatalf("error getting new salt: %v", err)
 		}
 		return &NoopAudit{
 			Config: config,
@@ -876,19 +877,6 @@ func TestSystemBackend_rawRead_Protected(t *testing.T) {
 	}
 }
 
-func TestSystemBackend_rawRead(t *testing.T) {
-	b := testSystemBackend(t)
-
-	req := logical.TestRequest(t, logical.ReadOperation, "raw/"+coreMountConfigPath)
-	resp, err := b.HandleRequest(req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if resp.Data["value"].(string)[0] != '{' {
-		t.Fatalf("bad: %v", resp)
-	}
-}
-
 func TestSystemBackend_rawWrite_Protected(t *testing.T) {
 	b := testSystemBackend(t)
 
@@ -899,7 +887,7 @@ func TestSystemBackend_rawWrite_Protected(t *testing.T) {
 	}
 }
 
-func TestSystemBackend_rawWrite(t *testing.T) {
+func TestSystemBackend_rawReadWrite(t *testing.T) {
 	c, b, _ := testCoreSystemBackend(t)
 
 	req := logical.TestRequest(t, logical.UpdateOperation, "raw/sys/policy/test")
@@ -909,6 +897,16 @@ func TestSystemBackend_rawWrite(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	if resp != nil {
+		t.Fatalf("bad: %v", resp)
+	}
+
+	// Read via raw API
+	req = logical.TestRequest(t, logical.ReadOperation, "raw/sys/policy/test")
+	resp, err = b.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.HasPrefix(resp.Data["value"].(string), "path") {
 		t.Fatalf("bad: %v", resp)
 	}
 

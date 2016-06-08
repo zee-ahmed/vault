@@ -36,7 +36,8 @@ var (
 // Performs basic tests on CA functionality
 // Uses the RSA CA key
 func TestBackend_RSAKey(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -71,7 +72,8 @@ func TestBackend_RSAKey(t *testing.T) {
 // Performs basic tests on CA functionality
 // Uses the EC CA key
 func TestBackend_ECKey(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -104,7 +106,8 @@ func TestBackend_ECKey(t *testing.T) {
 }
 
 func TestBackend_CSRValues(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -137,7 +140,8 @@ func TestBackend_CSRValues(t *testing.T) {
 }
 
 func TestBackend_URLsCRUD(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -173,7 +177,8 @@ func TestBackend_URLsCRUD(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the RSA CA key
 func TestBackend_RSARoles(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -220,7 +225,8 @@ func TestBackend_RSARoles(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the RSA CA key
 func TestBackend_RSARoles_CSR(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -267,7 +273,8 @@ func TestBackend_RSARoles_CSR(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the EC CA key
 func TestBackend_ECRoles(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -314,7 +321,8 @@ func TestBackend_ECRoles(t *testing.T) {
 // of role flags to ensure that they are properly restricted
 // Uses the EC CA key
 func TestBackend_ECRoles_CSR(t *testing.T) {
-	if os.Getenv("VAULT_ACC") == "" {
+	if os.Getenv(logicaltest.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
 		return
 	}
 
@@ -481,6 +489,12 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 				"common_name": "Root Cert",
 				"ttl":         "180h",
 			},
+			Check: func(resp *logical.Response) error {
+				if resp.Secret != nil && resp.Secret.LeaseID != "" {
+					return fmt.Errorf("root returned with a lease")
+				}
+				return nil
+			},
 		},
 
 		logicaltest.TestStep{
@@ -548,6 +562,9 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 				if certString == "" {
 					return fmt.Errorf("no certificate returned")
 				}
+				if resp.Secret != nil && resp.Secret.LeaseID != "" {
+					return fmt.Errorf("signed intermediate returned with a lease")
+				}
 				certBytes, _ := base64.StdEncoding.DecodeString(certString)
 				certs, err := x509.ParseCertificates(certBytes)
 				if err != nil {
@@ -587,6 +604,9 @@ func generateURLSteps(t *testing.T, caCert, caKey string, intdata, reqdata map[s
 				certString := resp.Data["certificate"].(string)
 				if certString == "" {
 					return fmt.Errorf("no certificate returned")
+				}
+				if resp.Secret != nil && resp.Secret.LeaseID != "" {
+					return fmt.Errorf("signed intermediate returned with a lease")
 				}
 				certBytes, _ := base64.StdEncoding.DecodeString(certString)
 				certs, err := x509.ParseCertificates(certBytes)
@@ -1754,7 +1774,7 @@ func generateRoleSteps(t *testing.T, useCSRs bool) []logicaltest.TestStep {
 			}
 
 			if keys[0] != "test" {
-				return fmt.Errorf("unexpected key value of %d", keys[0])
+				return fmt.Errorf("unexpected key value of %s", keys[0])
 			}
 
 			return nil
