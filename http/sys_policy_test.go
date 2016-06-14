@@ -17,8 +17,8 @@ func TestSysPolicies(t *testing.T) {
 
 	var actual map[string]interface{}
 	expected := map[string]interface{}{
-		"policies": []interface{}{"default", "root"},
-		"keys":     []interface{}{"default", "root"},
+		"policies": []interface{}{"default", "response-wrapping", "root"},
+		"keys":     []interface{}{"default", "response-wrapping", "root"},
 	}
 	testResponseStatus(t, resp, 200)
 	testResponseBody(t, resp, &actual)
@@ -62,14 +62,19 @@ func TestSysWritePolicy(t *testing.T) {
 
 	var actual map[string]interface{}
 	expected := map[string]interface{}{
-		"policies": []interface{}{"default", "foo", "root"},
-		"keys":     []interface{}{"default", "foo", "root"},
+		"policies": []interface{}{"default", "foo", "response-wrapping", "root"},
+		"keys":     []interface{}{"default", "foo", "response-wrapping", "root"},
 	}
 	testResponseStatus(t, resp, 200)
 	testResponseBody(t, resp, &actual)
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("bad: got\n%#v\nexpected\n%#v\n", actual, expected)
 	}
+
+	resp = testHttpPost(t, token, addr+"/v1/sys/policy/response-wrapping", map[string]interface{}{
+		"rules": ``,
+	})
+	testResponseStatus(t, resp, 400)
 }
 
 func TestSysDeletePolicy(t *testing.T) {
@@ -86,12 +91,17 @@ func TestSysDeletePolicy(t *testing.T) {
 	resp = testHttpDelete(t, token, addr+"/v1/sys/policy/foo")
 	testResponseStatus(t, resp, 204)
 
+	// Also attempt to delete these since they should not be allowed (ignore
+	// responses, if they exist later that's sufficient)
+	resp = testHttpDelete(t, token, addr+"/v1/sys/policy/default")
+	resp = testHttpDelete(t, token, addr+"/v1/sys/policy/response-wrapping")
+
 	resp = testHttpGet(t, token, addr+"/v1/sys/policy")
 
 	var actual map[string]interface{}
 	expected := map[string]interface{}{
-		"policies": []interface{}{"default", "root"},
-		"keys":     []interface{}{"default", "root"},
+		"policies": []interface{}{"default", "response-wrapping", "root"},
+		"keys":     []interface{}{"default", "response-wrapping", "root"},
 	}
 	testResponseStatus(t, resp, 200)
 	testResponseBody(t, resp, &actual)

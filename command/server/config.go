@@ -110,6 +110,11 @@ func (c *Config) Merge(c2 *Config) *Config {
 		result.Backend = c2.Backend
 	}
 
+	result.HABackend = c.HABackend
+	if c2.HABackend != nil {
+		result.HABackend = c2.HABackend
+	}
+
 	result.Telemetry = c.Telemetry
 	if c2.Telemetry != nil {
 		result.Telemetry = c2.Telemetry
@@ -195,6 +200,7 @@ func ParseConfig(d string) (*Config, error) {
 	}
 
 	valid := []string{
+		"atlas",
 		"backend",
 		"ha_backend",
 		"listener",
@@ -360,7 +366,7 @@ func parseBackends(result *Config, list *ast.ObjectList) error {
 		return multierror.Prefix(err, fmt.Sprintf("backend.%s:", key))
 	}
 
-	// Pull out the advertise address since it's commong to all backends
+	// Pull out the advertise address since it's common to all backends
 	var advertiseAddr string
 	if v, ok := m["advertise_addr"]; ok {
 		advertiseAddr = v
@@ -393,7 +399,7 @@ func parseHABackends(result *Config, list *ast.ObjectList) error {
 		return multierror.Prefix(err, fmt.Sprintf("ha_backend.%s:", key))
 	}
 
-	// Pull out the advertise address since it's commong to all backends
+	// Pull out the advertise address since it's common to all backends
 	var advertiseAddr string
 	if v, ok := m["advertise_addr"]; ok {
 		advertiseAddr = v
@@ -409,6 +415,8 @@ func parseHABackends(result *Config, list *ast.ObjectList) error {
 }
 
 func parseListeners(result *Config, list *ast.ObjectList) error {
+	var foundAtlas bool
+
 	listeners := make([]*Listener, 0, len(list.Items))
 	for _, item := range list.Items {
 		key := "listener"
@@ -418,10 +426,14 @@ func parseListeners(result *Config, list *ast.ObjectList) error {
 
 		valid := []string{
 			"address",
+			"endpoint",
+			"infrastructure",
+			"node_id",
 			"tls_disable",
 			"tls_cert_file",
 			"tls_key_file",
 			"tls_min_version",
+			"token",
 		}
 		if err := checkHCLKeys(item.Val, valid); err != nil {
 			return multierror.Prefix(err, fmt.Sprintf("listeners.%s:", key))
@@ -432,8 +444,27 @@ func parseListeners(result *Config, list *ast.ObjectList) error {
 			return multierror.Prefix(err, fmt.Sprintf("listeners.%s:", key))
 		}
 
+		lnType := strings.ToLower(key)
+
+		if lnType == "atlas" {
+			if foundAtlas {
+				return multierror.Prefix(fmt.Errorf("only one listener of type 'atlas' is permitted"), fmt.Sprintf("listeners.%s", key))
+			}
+
+			foundAtlas = true
+			if m["token"] == "" {
+				return multierror.Prefix(fmt.Errorf("'token' must be specified for an Atlas listener"), fmt.Sprintf("listeners.%s", key))
+			}
+			if m["infrastructure"] == "" {
+				return multierror.Prefix(fmt.Errorf("'infrastructure' must be specified for an Atlas listener"), fmt.Sprintf("listeners.%s", key))
+			}
+			if m["node_id"] == "" {
+				return multierror.Prefix(fmt.Errorf("'node_id' must be specified for an Atlas listener"), fmt.Sprintf("listeners.%s", key))
+			}
+		}
+
 		listeners = append(listeners, &Listener{
-			Type:   strings.ToLower(key),
+			Type:   lnType,
 			Config: m,
 		})
 	}

@@ -3,6 +3,7 @@ package vault
 import (
 	"crypto/sha256"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,125 @@ func TestSystemBackend_unmount(t *testing.T) {
 	}
 	if resp != nil {
 		t.Fatalf("bad: %v", resp)
+	}
+}
+
+var capabilitiesPolicy = `
+name = "test"
+path "foo/bar*" {
+	capabilities = ["create", "sudo", "update"]
+}
+path "sys/capabilities*" {
+	capabilities = ["update"]
+}
+`
+
+func TestSystemBackend_Capabilities(t *testing.T) {
+	testCapabilities(t, "capabilities")
+	testCapabilities(t, "capabilities-self")
+}
+
+func testCapabilities(t *testing.T, endpoint string) {
+	core, b, rootToken := testCoreSystemBackend(t)
+	req := logical.TestRequest(t, logical.UpdateOperation, endpoint)
+	req.Data["token"] = rootToken
+	req.Data["path"] = "any_path"
+
+	resp, err := b.HandleRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil {
+		t.Fatalf("bad: %v", resp)
+	}
+
+	actual := resp.Data["capabilities"]
+	expected := []string{"root"}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bad: got\n%#v\nexpected\n%#v\n", actual, expected)
+	}
+
+	policy, _ := Parse(capabilitiesPolicy)
+	err = core.policyStore.SetPolicy(policy)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	testMakeToken(t, core.tokenStore, rootToken, "tokenid", "", []string{"test"})
+	req = logical.TestRequest(t, logical.UpdateOperation, endpoint)
+	req.Data["token"] = "tokenid"
+	req.Data["path"] = "foo/bar"
+
+	resp, err = b.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("bad: %v", resp)
+	}
+
+	actual = resp.Data["capabilities"]
+	expected = []string{"create", "sudo", "update"}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bad: got\n%#v\nexpected\n%#v\n", actual, expected)
+	}
+}
+
+func TestSystemBackend_CapabilitiesAccessor(t *testing.T) {
+	core, b, rootToken := testCoreSystemBackend(t)
+	te, err := core.tokenStore.Lookup(rootToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := logical.TestRequest(t, logical.UpdateOperation, "capabilities-accessor")
+	// Accessor of root token
+	req.Data["accessor"] = te.Accessor
+	req.Data["path"] = "any_path"
+
+	resp, err := b.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("bad: %v", resp)
+	}
+
+	actual := resp.Data["capabilities"]
+	expected := []string{"root"}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bad: got\n%#v\nexpected\n%#v\n", actual, expected)
+	}
+
+	policy, _ := Parse(capabilitiesPolicy)
+	err = core.policyStore.SetPolicy(policy)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	testMakeToken(t, core.tokenStore, rootToken, "tokenid", "", []string{"test"})
+
+	te, err = core.tokenStore.Lookup("tokenid")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req = logical.TestRequest(t, logical.UpdateOperation, "capabilities-accessor")
+	req.Data["accessor"] = te.Accessor
+	req.Data["path"] = "foo/bar"
+
+	resp, err = b.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("bad: %v", resp)
+	}
+
+	actual = resp.Data["capabilities"]
+	expected = []string{"create", "sudo", "update"}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bad: got\n%#v\nexpected\n%#v\n", actual, expected)
 	}
 }
 
@@ -490,8 +610,8 @@ func TestSystemBackend_policyList(t *testing.T) {
 	}
 
 	exp := map[string]interface{}{
-		"keys":     []string{"default", "root"},
-		"policies": []string{"default", "root"},
+		"keys":     []string{"default", "response-wrapping", "root"},
+		"policies": []string{"default", "response-wrapping", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -543,8 +663,8 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 	}
 
 	exp = map[string]interface{}{
-		"keys":     []string{"default", "foo", "root"},
-		"policies": []string{"default", "foo", "root"},
+		"keys":     []string{"default", "foo", "response-wrapping", "root"},
+		"policies": []string{"default", "foo", "response-wrapping", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -578,8 +698,8 @@ func TestSystemBackend_policyCRUD(t *testing.T) {
 	}
 
 	exp = map[string]interface{}{
-		"keys":     []string{"default", "root"},
-		"policies": []string{"default", "root"},
+		"keys":     []string{"default", "response-wrapping", "root"},
+		"policies": []string{"default", "response-wrapping", "root"},
 	}
 	if !reflect.DeepEqual(resp.Data, exp) {
 		t.Fatalf("got: %#v expect: %#v", resp.Data, exp)
@@ -620,7 +740,7 @@ func TestSystemBackend_auditHash(t *testing.T) {
 			HMACType: "hmac-sha256",
 		})
 		if err != nil {
-			t.Fatal("error getting new salt: %v", err)
+			t.Fatalf("error getting new salt: %v", err)
 		}
 		return &NoopAudit{
 			Config: config,
@@ -757,19 +877,6 @@ func TestSystemBackend_rawRead_Protected(t *testing.T) {
 	}
 }
 
-func TestSystemBackend_rawRead(t *testing.T) {
-	b := testSystemBackend(t)
-
-	req := logical.TestRequest(t, logical.ReadOperation, "raw/"+coreMountConfigPath)
-	resp, err := b.HandleRequest(req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if resp.Data["value"].(string)[0] != '{' {
-		t.Fatalf("bad: %v", resp)
-	}
-}
-
 func TestSystemBackend_rawWrite_Protected(t *testing.T) {
 	b := testSystemBackend(t)
 
@@ -780,7 +887,7 @@ func TestSystemBackend_rawWrite_Protected(t *testing.T) {
 	}
 }
 
-func TestSystemBackend_rawWrite(t *testing.T) {
+func TestSystemBackend_rawReadWrite(t *testing.T) {
 	c, b, _ := testCoreSystemBackend(t)
 
 	req := logical.TestRequest(t, logical.UpdateOperation, "raw/sys/policy/test")
@@ -790,6 +897,16 @@ func TestSystemBackend_rawWrite(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	if resp != nil {
+		t.Fatalf("bad: %v", resp)
+	}
+
+	// Read via raw API
+	req = logical.TestRequest(t, logical.ReadOperation, "raw/sys/policy/test")
+	resp, err = b.HandleRequest(req)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !strings.HasPrefix(resp.Data["value"].(string), "path") {
 		t.Fatalf("bad: %v", resp)
 	}
 
