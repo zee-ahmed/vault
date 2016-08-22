@@ -4,7 +4,7 @@ import (
 	"encoding/pem"
 	"fmt"
 
-	"github.com/hashicorp/vault/helper/certutil"
+	"github.com/hashicorp/vault/helper/errutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -139,10 +139,10 @@ func (b *backend) pathFetchRead(req *logical.Request, data *framework.FieldData)
 	certEntry, funcErr = fetchCertBySerial(req, req.Path, serial)
 	if funcErr != nil {
 		switch funcErr.(type) {
-		case certutil.UserError:
+		case errutil.UserError:
 			response = logical.ErrorResponse(funcErr.Error())
 			goto reply
-		case certutil.InternalError:
+		case errutil.InternalError:
 			retErr = funcErr
 			goto reply
 		}
@@ -165,10 +165,10 @@ func (b *backend) pathFetchRead(req *logical.Request, data *framework.FieldData)
 	revokedEntry, funcErr = fetchCertBySerial(req, "revoked/", serial)
 	if funcErr != nil {
 		switch funcErr.(type) {
-		case certutil.UserError:
+		case errutil.UserError:
 			response = logical.ErrorResponse(funcErr.Error())
 			goto reply
-		case certutil.InternalError:
+		case errutil.InternalError:
 			retErr = funcErr
 			goto reply
 		}
@@ -191,7 +191,9 @@ reply:
 				logical.HTTPRawBody:     certificate,
 			}}
 		if retErr != nil {
-			b.Logger().Printf("Possible error, but cannot return in raw response: %s. Note that an empty CA probably means none was configured, and an empty CRL is quite possibly correct", retErr)
+			if b.Logger().IsWarn() {
+				b.Logger().Warn("Possible error, but cannot return in raw response. Note that an empty CA probably means none was configured, and an empty CRL is possibly correct", "error", retErr)
+			}
 		}
 		retErr = nil
 		response.Data[logical.HTTPStatusCode] = 200

@@ -16,42 +16,51 @@ func pathRole(b *backend) *framework.Path {
 	return &framework.Path{
 		Pattern: "role/" + framework.GenericNameRegex("role"),
 		Fields: map[string]*framework.FieldSchema{
-			"role": &framework.FieldSchema{
+			"role": {
 				Type:        framework.TypeString,
 				Description: "Name of the role.",
 			},
-
-			"bound_ami_id": &framework.FieldSchema{
+			"bound_ami_id": {
 				Type: framework.TypeString,
 				Description: `If set, defines a constraint on the EC2 instances that they should be
 using the AMI ID specified by this parameter.`,
 			},
-
-			"role_tag": &framework.FieldSchema{
+			"bound_account_id": {
+				Type: framework.TypeString,
+				Description: `If set, defines a constraint on the EC2 instances that the account ID
+in its identity document to match the one specified by this parameter.`,
+			},
+			"bound_iam_role_arn": {
+				Type:        framework.TypeString,
+				Description: `If set, defines a constraint on the EC2 instances that they should be using the IAM Role ARN specified by this parameter.`,
+			},
+			"role_tag": {
 				Type:        framework.TypeString,
 				Default:     "",
 				Description: "If set, enables the role tags for this role. The value set for this field should be the 'key' of the tag on the EC2 instance. The 'value' of the tag should be generated using 'role/<role>/tag' endpoint. Defaults to an empty string, meaning that role tags are disabled.",
 			},
-
-			"max_ttl": &framework.FieldSchema{
+			"ttl": {
+				Type:    framework.TypeDurationSecond,
+				Default: 0,
+				Description: `Duration in seconds after which the issued token should expire. Defaults
+to 0, in which case the value will fallback to the system/mount defaults.`,
+			},
+			"max_ttl": {
 				Type:        framework.TypeDurationSecond,
 				Default:     0,
 				Description: "The maximum allowed lifetime of tokens issued using this role.",
 			},
-
-			"policies": &framework.FieldSchema{
+			"policies": {
 				Type:        framework.TypeString,
 				Default:     "default",
 				Description: "Policies to be set on tokens issued using this role.",
 			},
-
-			"allow_instance_migration": &framework.FieldSchema{
+			"allow_instance_migration": {
 				Type:        framework.TypeBool,
 				Default:     false,
 				Description: "If set, allows migration of the underlying instance where the client resides. This keys off of pendingTime in the metadata document, so essentially, this disables the client nonce check whenever the instance is migrated to a new host and pendingTime is newer than the previously-remembered time. Use with caution.",
 			},
-
-			"disallow_reauthentication": &framework.FieldSchema{
+			"disallow_reauthentication": {
 				Type:        framework.TypeBool,
 				Default:     false,
 				Description: "If set, only allows a single token to be granted per instance ID. In order to perform a fresh login, the entry in whitelist for the instance ID needs to be cleared using 'auth/aws-ec2/identity-whitelist/<instance_id>' endpoint.",
@@ -176,6 +185,8 @@ func (b *backend) pathRoleRead(
 	// HMAC key belonging to the role should NOT be exported.
 	delete(respData, "hmac_key")
 
+	// Display the ttl in seconds.
+	respData["ttl"] = roleEntry.TTL / time.Second
 	// Display the max_ttl in seconds.
 	respData["max_ttl"] = roleEntry.MaxTTL / time.Second
 
@@ -204,17 +215,28 @@ func (b *backend) pathRoleCreateUpdate(
 		roleEntry = &awsRoleEntry{}
 	}
 
-	// Set the bound parameters only if they are supplied.
-	// There are no default values for bound parameters.
-	boundAmiIDStr, ok := data.GetOk("bound_ami_id")
-	if ok {
-		roleEntry.BoundAmiID = boundAmiIDStr.(string)
+	// Set BoundAmiID only if it is supplied. There can't be a default value.
+	if boundAmiIDRaw, ok := data.GetOk("bound_ami_id"); ok {
+		roleEntry.BoundAmiID = boundAmiIDRaw.(string)
 	}
 
-	// At least one bound parameter should be set. Currently, only
-	// 'bound_ami_id' is supported. Check if that is set.
-	if roleEntry.BoundAmiID == "" {
-		return logical.ErrorResponse("role is not bounded to any resource; set bound_ami_id"), nil
+	// Set BoundAccountID only if it is supplied. There can't be a default value.
+	if boundAccountIDRaw, ok := data.GetOk("bound_account_id"); ok {
+		roleEntry.BoundAccountID = boundAccountIDRaw.(string)
+	}
+
+	if boundIamARNRaw, ok := data.GetOk("bound_iam_role_arn"); ok {
+		roleEntry.BoundIamARN = boundIamARNRaw.(string)
+	}
+
+	// Ensure that at least one bound is set on the role
+	switch {
+	case roleEntry.BoundAccountID != "":
+	case roleEntry.BoundAmiID != "":
+	case roleEntry.BoundIamARN != "":
+	default:
+
+		return logical.ErrorResponse("at least be one bound parameter should be specified on the role"), nil
 	}
 
 	policiesStr, ok := data.GetOk("policies")
@@ -240,12 +262,24 @@ func (b *backend) pathRoleCreateUpdate(
 
 	var resp logical.Response
 
+	ttlRaw, ok := data.GetOk("ttl")
+	if ok {
+		ttl := time.Duration(ttlRaw.(int)) * time.Second
+		defaultLeaseTTL := b.System().DefaultLeaseTTL()
+		if ttl > defaultLeaseTTL {
+			resp.AddWarning(fmt.Sprintf("Given ttl of %d seconds greater than current mount/system default of %d seconds; ttl will be capped at login time", ttl/time.Second, defaultLeaseTTL/time.Second))
+		}
+		roleEntry.TTL = ttl
+	} else if req.Operation == logical.CreateOperation {
+		roleEntry.TTL = time.Duration(data.Get("ttl").(int)) * time.Second
+	}
+
 	maxTTLInt, ok := data.GetOk("max_ttl")
 	if ok {
 		maxTTL := time.Duration(maxTTLInt.(int)) * time.Second
 		systemMaxTTL := b.System().MaxLeaseTTL()
 		if maxTTL > systemMaxTTL {
-			resp.AddWarning(fmt.Sprintf("Given TTL of %d seconds greater than current mount/system default of %d seconds; TTL will be capped at login time", maxTTL/time.Second, systemMaxTTL/time.Second))
+			resp.AddWarning(fmt.Sprintf("Given max_ttl of %d seconds greater than current mount/system default of %d seconds; max_ttl will be capped at login time", maxTTL/time.Second, systemMaxTTL/time.Second))
 		}
 
 		if maxTTL < time.Duration(0) {
@@ -255,6 +289,10 @@ func (b *backend) pathRoleCreateUpdate(
 		roleEntry.MaxTTL = maxTTL
 	} else if req.Operation == logical.CreateOperation {
 		roleEntry.MaxTTL = time.Duration(data.Get("max_ttl").(int)) * time.Second
+	}
+
+	if roleEntry.MaxTTL != 0 && roleEntry.MaxTTL < roleEntry.TTL {
+		return logical.ErrorResponse("ttl should be shorter than max_ttl"), nil
 	}
 
 	roleTagStr, ok := data.GetOk("role_tag")
@@ -295,8 +333,11 @@ func (b *backend) pathRoleCreateUpdate(
 // Struct to hold the information associated with an AMI ID in Vault.
 type awsRoleEntry struct {
 	BoundAmiID               string        `json:"bound_ami_id" structs:"bound_ami_id" mapstructure:"bound_ami_id"`
+	BoundAccountID           string        `json:"bound_account_id" structs:"bound_account_id" mapstructure:"bound_account_id"`
+	BoundIamARN              string        `json:"bound_iam_role_arn" structs:"bound_iam_role_arn" mapstructure:"bound_iam_role_arn"`
 	RoleTag                  string        `json:"role_tag" structs:"role_tag" mapstructure:"role_tag"`
 	AllowInstanceMigration   bool          `json:"allow_instance_migration" structs:"allow_instance_migration" mapstructure:"allow_instance_migration"`
+	TTL                      time.Duration `json:"ttl" structs:"ttl" mapstructure:"ttl"`
 	MaxTTL                   time.Duration `json:"max_ttl" structs:"max_ttl" mapstructure:"max_ttl"`
 	Policies                 []string      `json:"policies" structs:"policies" mapstructure:"policies"`
 	DisallowReauthentication bool          `json:"disallow_reauthentication" structs:"disallow_reauthentication" mapstructure:"disallow_reauthentication"`

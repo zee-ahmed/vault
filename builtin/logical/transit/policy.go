@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/vault/helper/certutil"
+	uuid "github.com/hashicorp/go-uuid"
+	"github.com/hashicorp/vault/helper/errutil"
+	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/kdf"
 	"github.com/hashicorp/vault/logical"
 )
@@ -44,8 +46,7 @@ func (kem KeyEntryMap) MarshalJSON() ([]byte, error) {
 // MarshalJSON implements JSON unmarshaling
 func (kem KeyEntryMap) UnmarshalJSON(data []byte) error {
 	intermediate := map[string]KeyEntry{}
-	err := json.Unmarshal(data, &intermediate)
-	if err != nil {
+	if err := jsonutil.DecodeJSON(data, &intermediate); err != nil {
 		return err
 	}
 	for k, v := range intermediate {
@@ -66,10 +67,12 @@ type Policy struct {
 	Keys       KeyEntryMap `json:"keys"`
 	CipherMode string      `json:"cipher"`
 
-	// Derived keys MUST provide a context and the
-	// master underlying key is never used.
-	Derived bool   `json:"derived"`
-	KDFMode string `json:"kdf_mode"`
+	// Derived keys MUST provide a context and the master underlying key is
+	// never used. If convergent encryption is true, the context will be used
+	// as the nonce as well.
+	Derived              bool   `json:"derived"`
+	KDFMode              string `json:"kdf_mode"`
+	ConvergentEncryption bool   `json:"convergent_encryption"`
 
 	// The minimum version of the key allowed to be used
 	// for decryption
@@ -104,7 +107,7 @@ func (p *Policy) loadArchive(storage logical.Storage) (*ArchivedKeys, error) {
 		return archive, nil
 	}
 
-	if err := json.Unmarshal(raw.Value, archive); err != nil {
+	if err := jsonutil.DecodeJSON(raw.Value, archive); err != nil {
 		return nil, err
 	}
 
@@ -302,15 +305,11 @@ func (p *Policy) upgrade(storage logical.Storage) error {
 // mode is used with the context to derive the proper key.
 func (p *Policy) DeriveKey(context []byte, ver int) ([]byte, error) {
 	if p.Keys == nil || p.LatestVersion == 0 {
-		return nil, certutil.InternalError{Err: "unable to access the key; no key versions found"}
-	}
-
-	if p.LatestVersion == 0 {
-		return nil, certutil.InternalError{Err: "unable to access the key; no key versions found"}
+		return nil, errutil.InternalError{Err: "unable to access the key; no key versions found"}
 	}
 
 	if ver <= 0 || ver > p.LatestVersion {
-		return nil, certutil.UserError{Err: "invalid key version"}
+		return nil, errutil.UserError{Err: "invalid key version"}
 	}
 
 	// Fast-path non-derived keys
@@ -320,7 +319,7 @@ func (p *Policy) DeriveKey(context []byte, ver int) ([]byte, error) {
 
 	// Ensure a context is provided
 	if len(context) == 0 {
-		return nil, certutil.UserError{Err: "missing 'context' for key deriviation. The key was created using a derived key, which means additional, per-request information must be included in order to encrypt or decrypt information"}
+		return nil, errutil.UserError{Err: "missing 'context' for key deriviation. The key was created using a derived key, which means additional, per-request information must be included in order to encrypt or decrypt information"}
 	}
 
 	switch p.KDFMode {
@@ -329,54 +328,62 @@ func (p *Policy) DeriveKey(context []byte, ver int) ([]byte, error) {
 		prfLen := kdf.HMACSHA256PRFLen
 		return kdf.CounterMode(prf, prfLen, p.Keys[ver].Key, context, 256)
 	default:
-		return nil, certutil.InternalError{Err: "unsupported key derivation mode"}
+		return nil, errutil.InternalError{Err: "unsupported key derivation mode"}
 	}
 }
 
-func (p *Policy) Encrypt(context []byte, value string) (string, error) {
+func (p *Policy) Encrypt(context, nonce []byte, value string) (string, error) {
 	// Decode the plaintext value
 	plaintext, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
-		return "", certutil.UserError{Err: "failed to decode plaintext as base64"}
+		return "", errutil.UserError{Err: "failed to base64-decode plaintext"}
 	}
 
 	// Derive the key that should be used
 	key, err := p.DeriveKey(context, p.LatestVersion)
 	if err != nil {
-		return "", certutil.InternalError{Err: err.Error()}
+		return "", err
 	}
 
 	// Guard against a potentially invalid cipher-mode
 	switch p.CipherMode {
 	case "aes-gcm":
 	default:
-		return "", certutil.InternalError{Err: "unsupported cipher mode"}
+		return "", errutil.InternalError{Err: "unsupported cipher mode"}
 	}
 
 	// Setup the cipher
 	aesCipher, err := aes.NewCipher(key)
 	if err != nil {
-		return "", certutil.InternalError{Err: err.Error()}
+		return "", errutil.InternalError{Err: err.Error()}
 	}
 
 	// Setup the GCM AEAD
 	gcm, err := cipher.NewGCM(aesCipher)
 	if err != nil {
-		return "", certutil.InternalError{Err: err.Error()}
+		return "", errutil.InternalError{Err: err.Error()}
 	}
 
-	// Compute random nonce
-	nonce := make([]byte, gcm.NonceSize())
-	_, err = rand.Read(nonce)
-	if err != nil {
-		return "", certutil.InternalError{Err: err.Error()}
+	if p.ConvergentEncryption {
+		if len(nonce) != gcm.NonceSize() {
+			return "", errutil.UserError{Err: fmt.Sprintf("base64-decoded nonce must be %d bytes long when using convergent encryption with this key", gcm.NonceSize())}
+		}
+	} else {
+		// Compute random nonce
+		nonce, err = uuid.GenerateRandomBytes(gcm.NonceSize())
+		if err != nil {
+			return "", errutil.InternalError{Err: err.Error()}
+		}
 	}
 
 	// Encrypt and tag with GCM
 	out := gcm.Seal(nil, nonce, plaintext, nil)
 
 	// Place the encrypted data after the nonce
-	full := append(nonce, out...)
+	full := out
+	if !p.ConvergentEncryption {
+		full = append(nonce, out...)
+	}
 
 	// Convert to base64
 	encoded := base64.StdEncoding.EncodeToString(full)
@@ -387,20 +394,24 @@ func (p *Policy) Encrypt(context []byte, value string) (string, error) {
 	return encoded, nil
 }
 
-func (p *Policy) Decrypt(context []byte, value string) (string, error) {
+func (p *Policy) Decrypt(context, nonce []byte, value string) (string, error) {
 	// Verify the prefix
 	if !strings.HasPrefix(value, "vault:v") {
-		return "", certutil.UserError{Err: "invalid ciphertext: no prefix"}
+		return "", errutil.UserError{Err: "invalid ciphertext: no prefix"}
+	}
+
+	if p.ConvergentEncryption && (nonce == nil || len(nonce) == 0) {
+		return "", errutil.UserError{Err: "invalid convergent nonce supplied"}
 	}
 
 	splitVerCiphertext := strings.SplitN(strings.TrimPrefix(value, "vault:v"), ":", 2)
 	if len(splitVerCiphertext) != 2 {
-		return "", certutil.UserError{Err: "invalid ciphertext: wrong number of fields"}
+		return "", errutil.UserError{Err: "invalid ciphertext: wrong number of fields"}
 	}
 
 	ver, err := strconv.Atoi(splitVerCiphertext[0])
 	if err != nil {
-		return "", certutil.UserError{Err: "invalid ciphertext: version number could not be decoded"}
+		return "", errutil.UserError{Err: "invalid ciphertext: version number could not be decoded"}
 	}
 
 	if ver == 0 {
@@ -410,11 +421,11 @@ func (p *Policy) Decrypt(context []byte, value string) (string, error) {
 	}
 
 	if ver > p.LatestVersion {
-		return "", certutil.UserError{Err: "invalid ciphertext: version is too new"}
+		return "", errutil.UserError{Err: "invalid ciphertext: version is too new"}
 	}
 
 	if p.MinDecryptionVersion > 0 && ver < p.MinDecryptionVersion {
-		return "", certutil.UserError{Err: ErrTooOld}
+		return "", errutil.UserError{Err: ErrTooOld}
 	}
 
 	// Derive the key that should be used
@@ -427,35 +438,40 @@ func (p *Policy) Decrypt(context []byte, value string) (string, error) {
 	switch p.CipherMode {
 	case "aes-gcm":
 	default:
-		return "", certutil.InternalError{Err: "unsupported cipher mode"}
+		return "", errutil.InternalError{Err: "unsupported cipher mode"}
 	}
 
 	// Decode the base64
 	decoded, err := base64.StdEncoding.DecodeString(splitVerCiphertext[1])
 	if err != nil {
-		return "", certutil.UserError{Err: "invalid ciphertext: could not decode base64"}
+		return "", errutil.UserError{Err: "invalid ciphertext: could not decode base64"}
 	}
 
 	// Setup the cipher
 	aesCipher, err := aes.NewCipher(key)
 	if err != nil {
-		return "", certutil.InternalError{Err: err.Error()}
+		return "", errutil.InternalError{Err: err.Error()}
 	}
 
 	// Setup the GCM AEAD
 	gcm, err := cipher.NewGCM(aesCipher)
 	if err != nil {
-		return "", certutil.InternalError{Err: err.Error()}
+		return "", errutil.InternalError{Err: err.Error()}
 	}
 
 	// Extract the nonce and ciphertext
-	nonce := decoded[:gcm.NonceSize()]
-	ciphertext := decoded[gcm.NonceSize():]
+	var ciphertext []byte
+	if p.ConvergentEncryption {
+		ciphertext = decoded
+	} else {
+		nonce = decoded[:gcm.NonceSize()]
+		ciphertext = decoded[gcm.NonceSize():]
+	}
 
 	// Verify and Decrypt
 	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return "", certutil.UserError{Err: "invalid ciphertext: unable to decrypt"}
+		return "", errutil.UserError{Err: "invalid ciphertext: unable to decrypt"}
 	}
 
 	return base64.StdEncoding.EncodeToString(plain), nil

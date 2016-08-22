@@ -39,7 +39,7 @@ backend "consul" {
 	haconsulhcl = `
 ha_backend "consul" {
     prefix = "bar/"
-    advertise_addr = "http://127.0.0.1:8200"
+    redirect_addr = "http://127.0.0.1:8200"
     disable_registration = "true"
 }
 `
@@ -230,7 +230,7 @@ func TestServer_ReloadListener(t *testing.T) {
 	}
 
 	checkFinished()
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 	checkFinished()
 
 	if err := testCertificateName("foo.example.com"); err != nil {

@@ -30,23 +30,21 @@ with a named key but not decrypt with it; a separate set of servers not
 directly connected to the Internet can then perform decryption, reducing the
 data's attack surface.
 
-As of Vault 0.2, the transit backend supports doing key derivation. This
-allows data to be encrypted within a context such that the same context must be
-used for decryption. This can be used to enable per-transaction unique keys which
-further increase the security of data at rest.
+Key derivation is supported, which allows the same key to be used for multiple
+purposes by deriving a new key based on a user-supplied context value. In this
+mode, convergent encryption can optionally be supported, which allows the same
+input values to produce the same ciphertext.
 
-As of Vault 0.3, the transit backend gained two new key features: key rotation
-and datakey generation.
-
-Key rotation allows a new version of the named key to be generated. All data
-encrypted with the key will use the newest version of the key; previously
-encrypted data can be decrypted using old versions of the key. Administrators
-can control which previous versions of a key are available for decryption, to
-prevent an attacker gaining an old copy of ciphertext to be able to successfully
-decrypt it. At any time, a legitimate user can "rewrap" the data, providing an
-old version of the ciphertext and receiving a new version encrypted with the
-latest key. Because rewrapping does not expose the plaintext, using Vault's ACL
-system, this can even be safely performed by unprivileged users or cron jobs.
+The backend also supports key rotation, which allows a new version of the named
+key to be generated. All data encrypted with the key will use the newest
+version of the key; previously encrypted data can be decrypted using old
+versions of the key. Administrators can control which previous versions of a
+key are available for decryption, to prevent an attacker gaining an old copy of
+ciphertext to be able to successfully decrypt it. At any time, a legitimate
+user can "rewrap" the data, providing an old version of the ciphertext and
+receiving a new version encrypted with the latest key. Because rewrapping does
+not expose the plaintext, using Vault's ACL system, this can even be safely
+performed by unprivileged users or cron jobs.
 
 Datakey generation allows processes to request a high-entropy key of a given
 bit length be returned to them, encrypted with the named key. Normally this will
@@ -54,10 +52,10 @@ also return the key in plaintext to allow for immediate use, but this can be
 disabled to accommodate auditing requirements.
 
 N.B.: As part of adding rotation support, the initial version of a named key
-now produces ciphertext starting with version 1, i.e. containing `:v1:`.
-Existing keys, when rotated, will jump to version 2 despite their previous
-ciphertext output containing `:v0:`. Decryption, however, treats version 0 and
-version 1 the same, so old ciphertext will still work.
+produces ciphertext starting with version 1, i.e. containing `:v1:`. Keys from
+very old versions of Vault, when rotated, will jump to version 2 despite their
+previous ciphertext output containing `:v0:`. Decryption, however, treats
+version 0 and version 1 the same, so old ciphertext will still work.
 
 This page will show a quick start for this backend. For detailed documentation
 on every path, use `vault path-help` after mounting the backend.
@@ -133,7 +131,8 @@ only encrypt or decrypt using the named keys they need access to.
 <dl class="api">
   <dt>Description</dt>
   <dd>
-    Creates a new named encryption key.
+    Creates a new named encryption key. The values set here cannot be changed
+    after key creation.
   </dd>
 
   <dt>Method</dt>
@@ -148,10 +147,25 @@ only encrypt or decrypt using the named keys they need access to.
       <li>
         <span class="param">derived</span>
         <span class="param-flags">optional</span>
-        Boolean flag indicating if key derivation MUST be used.
-        If enabled, all encrypt/decrypt requests to this named key
-        must provide a context which is used for key derivation.
-        Defaults to false.
+        Boolean flag indicating if key derivation MUST be used. If enabled, all
+        encrypt/decrypt requests to this named key must provide a context
+        which is used for key derivation. Defaults to false.
+      </li>
+      <li>
+        <span class="param">convergent_encryption</span>
+        <span class="param-flags">optional</span>
+        If set, the key will support convergent encryption, where the same
+        plaintext creates the same ciphertext. This requires _derived_ to be
+        set to `true`. When enabled, each
+        encryption(/decryption/rewrap/datakey) operation will require a `nonce`
+        value to be specified. Note that while this is useful for particular
+        situations, all nonce values used with a given context value **must be
+        unique** or it will compromise the security of your key. A common way
+        to use this will be to generate a unique identifier for the given data
+        (for instance, a SHA-512 sum), then separate the bytes so that twelve
+        bytes are used as the nonce and the remaining as the context, ensuring
+        that all bits of unique identity are used as a part of the encryption
+        operation. Defaults to false.
       </li>
     </ul>
   </dd>
@@ -337,6 +351,15 @@ only encrypt or decrypt using the named keys they need access to.
         The key derivation context, provided as base64 encoded.
         Must be provided if derivation is enabled.
       </li>
+      <li>
+        <span class="param">nonce</span>
+        <span class="param-flags">optional</span>
+        The nonce value, provided as base64 encoded. Must be provided if
+        convergent encryption is enabled for this key. The value must be
+        exactly 96 bits (12 bytes) long and the user must ensure that for any
+        given context (and thus, any given encryption key) this nonce value is
+        **never reused**.
+      </li>
     </ul>
   </dd>
 
@@ -382,6 +405,12 @@ only encrypt or decrypt using the named keys they need access to.
         <span class="param-flags">optional</span>
         The key derivation context, provided as base64 encoded.
         Must be provided if derivation is enabled.
+      </li>
+      <li>
+        <span class="param">nonce</span>
+        <span class="param-flags">optional</span>
+        The nonce value used during encryption, provided as base64 encoded.
+        Must be provided if convergent encryption is enabled for this key.
       </li>
     </ul>
   </dd>
@@ -430,6 +459,12 @@ only encrypt or decrypt using the named keys they need access to.
         <span class="param-flags">optional</span>
         The key derivation context, provided as base64 encoded.
         Must be provided if derivation is enabled.
+      </li>
+      <li>
+        <span class="param">nonce</span>
+        <span class="param-flags">optional</span>
+        The nonce value used during encryption, provided as base64 encoded.
+        Must be provided if convergent encryption is enabled for this key.
       </li>
     </ul>
   </dd>
@@ -482,6 +517,15 @@ only encrypt or decrypt using the named keys they need access to.
         <span class="param-flags">optional</span>
         The key derivation context, provided as base64 encoded.
         Must be provided if derivation is enabled.
+      </li>
+      <li>
+        <span class="param">nonce</span>
+        <span class="param-flags">optional</span>
+        The nonce value, provided as base64 encoded. Must be provided if
+        convergent encryption is enabled for this key. The value must be
+        exactly 96 bits (12 bytes) long and the user must ensure that for any
+        given context (and thus, any given encryption key) this nonce value is
+        **never reused**.
       </li>
       <li>
         <span class="param">bits</span>

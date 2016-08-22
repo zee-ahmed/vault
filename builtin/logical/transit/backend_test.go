@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/rand"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,8 +23,7 @@ const (
 func TestBackend_basic(t *testing.T) {
 	decryptData := make(map[string]interface{})
 	logicaltest.Test(t, logicaltest.TestCase{
-		AcceptanceTest: true,
-		Factory:        Factory,
+		Factory: Factory,
 		Steps: []logicaltest.TestStep{
 			testAccStepWritePolicy(t, "test", false),
 			testAccStepReadPolicy(t, "test", false, false),
@@ -48,8 +46,7 @@ func TestBackend_basic(t *testing.T) {
 func TestBackend_upsert(t *testing.T) {
 	decryptData := make(map[string]interface{})
 	logicaltest.Test(t, logicaltest.TestCase{
-		AcceptanceTest: true,
-		Factory:        Factory,
+		Factory: Factory,
 		Steps: []logicaltest.TestStep{
 			testAccStepReadPolicy(t, "test", true, false),
 			testAccStepEncryptUpsert(t, "test", testPlaintext, decryptData),
@@ -62,8 +59,7 @@ func TestBackend_upsert(t *testing.T) {
 func TestBackend_datakey(t *testing.T) {
 	dataKeyInfo := make(map[string]interface{})
 	logicaltest.Test(t, logicaltest.TestCase{
-		AcceptanceTest: true,
-		Factory:        Factory,
+		Factory: Factory,
 		Steps: []logicaltest.TestStep{
 			testAccStepWritePolicy(t, "test", false),
 			testAccStepReadPolicy(t, "test", false, false),
@@ -78,8 +74,7 @@ func TestBackend_rotation(t *testing.T) {
 	decryptData := make(map[string]interface{})
 	encryptHistory := make(map[int]map[string]interface{})
 	logicaltest.Test(t, logicaltest.TestCase{
-		AcceptanceTest: true,
-		Factory:        Factory,
+		Factory: Factory,
 		Steps: []logicaltest.TestStep{
 			testAccStepWritePolicy(t, "test", false),
 			testAccStepEncryptVX(t, "test", testPlaintext, decryptData, 0, encryptHistory),
@@ -136,8 +131,7 @@ func TestBackend_rotation(t *testing.T) {
 func TestBackend_basic_derived(t *testing.T) {
 	decryptData := make(map[string]interface{})
 	logicaltest.Test(t, logicaltest.TestCase{
-		AcceptanceTest: true,
-		Factory:        Factory,
+		Factory: Factory,
 		Steps: []logicaltest.TestStep{
 			testAccStepWritePolicy(t, "test", true),
 			testAccStepReadPolicy(t, "test", false, true),
@@ -228,13 +222,14 @@ func testAccStepReadPolicy(t *testing.T, name string, expectNone, derived bool) 
 				return nil
 			}
 			var d struct {
-				Name            string           `mapstructure:"name"`
-				Key             []byte           `mapstructure:"key"`
-				Keys            map[string]int64 `mapstructure:"keys"`
-				CipherMode      string           `mapstructure:"cipher_mode"`
-				Derived         bool             `mapstructure:"derived"`
-				KDFMode         string           `mapstructure:"kdf_mode"`
-				DeletionAllowed bool             `mapstructure:"deletion_allowed"`
+				Name                 string           `mapstructure:"name"`
+				Key                  []byte           `mapstructure:"key"`
+				Keys                 map[string]int64 `mapstructure:"keys"`
+				CipherMode           string           `mapstructure:"cipher_mode"`
+				Derived              bool             `mapstructure:"derived"`
+				KDFMode              string           `mapstructure:"kdf_mode"`
+				DeletionAllowed      bool             `mapstructure:"deletion_allowed"`
+				ConvergentEncryption bool             `mapstructure:"convergent_encryption"`
 			}
 			if err := mapstructure.Decode(resp.Data, &d); err != nil {
 				return err
@@ -552,13 +547,171 @@ func TestKeyUpgrade(t *testing.T) {
 	}
 }
 
-func TestPolicyFuzzing(t *testing.T) {
-	// Don't run if not during acceptance tests
-	if os.Getenv(logicaltest.TestEnvVar) == "" {
-		t.Skip(fmt.Sprintf("Acceptance tests skipped unless env '%s' set", logicaltest.TestEnvVar))
-		return
+func TestConvergentEncryption(t *testing.T) {
+	var b *backend
+	sysView := logical.TestSystemView()
+	storage := &logical.InmemStorage{}
+
+	b = Backend(&logical.BackendConfig{
+		StorageView: storage,
+		System:      sysView,
+	})
+
+	req := &logical.Request{
+		Storage:   storage,
+		Operation: logical.UpdateOperation,
+		Path:      "keys/testkeynonderived",
+		Data: map[string]interface{}{
+			"derived":               false,
+			"convergent_encryption": true,
+		},
 	}
 
+	resp, err := b.HandleRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if !resp.IsError() {
+		t.Fatalf("bad: expected error response, got %#v", *resp)
+	}
+
+	req.Path = "keys/testkey"
+	req.Data = map[string]interface{}{
+		"derived":               true,
+		"convergent_encryption": true,
+	}
+
+	resp, err = b.HandleRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp != nil {
+		t.Fatalf("bad: got resp %#v", *resp)
+	}
+
+	// First, test using an invalid length of nonce
+	req.Path = "encrypt/testkey"
+	req.Data = map[string]interface{}{
+		"plaintext": "emlwIHphcA==", // "zip zap"
+		"nonce":     "Zm9vIGJhcg==", // "foo bar"
+		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+	}
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if !resp.IsError() {
+		t.Fatalf("expected error response, got %#v", *resp)
+	}
+
+	// Ensure we fail if we do not provide a nonce
+	req.Data = map[string]interface{}{
+		"plaintext": "emlwIHphcA==", // "zip zap"
+		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+	}
+	resp, err = b.HandleRequest(req)
+	if err == nil && (resp == nil || !resp.IsError()) {
+		t.Fatal("expected error response")
+	}
+
+	// Now test encrypting the same value twice
+	req.Data = map[string]interface{}{
+		"plaintext": "emlwIHphcA==",     // "zip zap"
+		"nonce":     "b25ldHdvdGhyZWVl", // "onetwothreee"
+		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+	}
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext1 := resp.Data["ciphertext"].(string)
+
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext2 := resp.Data["ciphertext"].(string)
+
+	if ciphertext1 != ciphertext2 {
+		t.Fatalf("expected the same ciphertext but got %s and %s", ciphertext1, ciphertext2)
+	}
+
+	// For sanity, also check a different nonce value...
+	req.Data = map[string]interface{}{
+		"plaintext": "emlwIHphcA==",     // "zip zap"
+		"nonce":     "dHdvdGhyZWVmb3Vy", // "twothreefour"
+		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+	}
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext3 := resp.Data["ciphertext"].(string)
+
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext4 := resp.Data["ciphertext"].(string)
+
+	if ciphertext3 != ciphertext4 {
+		t.Fatalf("expected the same ciphertext but got %s and %s", ciphertext3, ciphertext4)
+	}
+	if ciphertext1 == ciphertext3 {
+		t.Fatalf("expected different ciphertexts")
+	}
+
+	// ...and a different context value
+	req.Data = map[string]interface{}{
+		"plaintext": "emlwIHphcA==",     // "zip zap"
+		"nonce":     "dHdvdGhyZWVmb3Vy", // "twothreefour"
+		"context":   "qV4h9iQyvn+raODOer4JNAsOhkXBwdT4HZ677Ql4KLqXSU+Jk4C/fXBWbv6xkSYT",
+	}
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext5 := resp.Data["ciphertext"].(string)
+
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext6 := resp.Data["ciphertext"].(string)
+
+	if ciphertext5 != ciphertext6 {
+		t.Fatalf("expected the same ciphertext but got %s and %s", ciphertext5, ciphertext6)
+	}
+	if ciphertext1 == ciphertext5 {
+		t.Fatalf("expected different ciphertexts")
+	}
+	if ciphertext3 == ciphertext5 {
+		t.Fatalf("expected different ciphertexts")
+	}
+}
+
+func TestPolicyFuzzing(t *testing.T) {
 	var be *backend
 	sysView := logical.TestSystemView()
 

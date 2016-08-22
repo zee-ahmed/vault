@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/hashicorp/vault/helper/certutil"
+	"github.com/hashicorp/vault/helper/errutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -27,6 +27,11 @@ func (b *backend) pathEncrypt() *framework.Path {
 			"context": &framework.FieldSchema{
 				Type:        framework.TypeString,
 				Description: "Context for key derivation. Required for derived keys.",
+			},
+
+			"nonce": &framework.FieldSchema{
+				Type:        framework.TypeString,
+				Description: "Nonce for when convergent encryption is used",
 			},
 		},
 
@@ -63,14 +68,25 @@ func (b *backend) pathEncryptWrite(
 		return logical.ErrorResponse("missing plaintext to encrypt"), logical.ErrInvalidRequest
 	}
 
+	var err error
+
 	// Decode the context if any
 	contextRaw := d.Get("context").(string)
 	var context []byte
-	var err error
 	if len(contextRaw) != 0 {
 		context, err = base64.StdEncoding.DecodeString(contextRaw)
 		if err != nil {
-			return logical.ErrorResponse("failed to decode context as base64"), logical.ErrInvalidRequest
+			return logical.ErrorResponse("failed to base64-decode context"), logical.ErrInvalidRequest
+		}
+	}
+
+	// Decode the nonce if any
+	nonceRaw := d.Get("nonce").(string)
+	var nonce []byte
+	if len(nonceRaw) != 0 {
+		nonce, err = base64.StdEncoding.DecodeString(nonceRaw)
+		if err != nil {
+			return logical.ErrorResponse("failed to base64-decode nonce"), logical.ErrInvalidRequest
 		}
 	}
 
@@ -79,7 +95,7 @@ func (b *backend) pathEncryptWrite(
 	var lock *sync.RWMutex
 	var upserted bool
 	if req.Operation == logical.CreateOperation {
-		p, lock, upserted, err = b.lm.GetPolicyUpsert(req.Storage, name, len(context) != 0)
+		p, lock, upserted, err = b.lm.GetPolicyUpsert(req.Storage, name, len(context) != 0, false)
 	} else {
 		p, lock, err = b.lm.GetPolicyShared(req.Storage, name)
 	}
@@ -93,12 +109,12 @@ func (b *backend) pathEncryptWrite(
 		return logical.ErrorResponse("policy not found"), logical.ErrInvalidRequest
 	}
 
-	ciphertext, err := p.Encrypt(context, value)
+	ciphertext, err := p.Encrypt(context, nonce, value)
 	if err != nil {
 		switch err.(type) {
-		case certutil.UserError:
+		case errutil.UserError:
 			return logical.ErrorResponse(err.Error()), logical.ErrInvalidRequest
-		case certutil.InternalError:
+		case errutil.InternalError:
 			return nil, err
 		default:
 			return nil, err

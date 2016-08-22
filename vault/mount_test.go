@@ -3,10 +3,12 @@ package vault
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/vault/audit"
+	"github.com/hashicorp/vault/helper/compressutil"
 	"github.com/hashicorp/vault/logical"
 )
 
@@ -23,7 +25,7 @@ func TestCore_DefaultMountTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	unseal, err := c2.Unseal(key)
+	unseal, err := TestCoreUnseal(c2, key)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -62,7 +64,7 @@ func TestCore_Mount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	unseal, err := c2.Unseal(key)
+	unseal, err := TestCoreUnseal(c2, key)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -96,7 +98,7 @@ func TestCore_Unmount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	unseal, err := c2.Unseal(key)
+	unseal, err := TestCoreUnseal(c2, key)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -214,7 +216,7 @@ func TestCore_Remount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	unseal, err := c2.Unseal(key)
+	unseal, err := TestCoreUnseal(c2, key)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -437,8 +439,18 @@ func testCore_MountTable_UpgradeToTyped_Common(
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(entry.Value, goodJson) {
-		t.Fatalf("bad: expected\n%s\ngot\n%s\n", string(goodJson), string(entry.Value))
+	decompressedBytes, uncompressed, err := compressutil.Decompress(entry.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	actual := decompressedBytes
+	if uncompressed {
+		actual = entry.Value
+	}
+
+	if strings.TrimSpace(string(actual)) != strings.TrimSpace(string(goodJson)) {
+		t.Fatalf("bad: expected\n%s\nactual\n%s\n", string(goodJson), string(actual))
 	}
 
 	// Now try saving invalid versions

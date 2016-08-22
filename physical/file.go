@@ -3,10 +3,13 @@ package physical
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
+
+	log "github.com/mgutz/logxi/v1"
+
+	"github.com/hashicorp/vault/helper/jsonutil"
 )
 
 // FileBackend is a physical backend that stores data on disk
@@ -19,11 +22,11 @@ import (
 type FileBackend struct {
 	Path   string
 	l      sync.Mutex
-	logger *log.Logger
+	logger log.Logger
 }
 
 // newFileBackend constructs a Filebackend using the given directory
-func newFileBackend(conf map[string]string, logger *log.Logger) (Backend, error) {
+func newFileBackend(conf map[string]string, logger log.Logger) (Backend, error) {
 	path, ok := conf["path"]
 	if !ok {
 		return nil, fmt.Errorf("'path' must be set")
@@ -68,8 +71,7 @@ func (b *FileBackend) Get(k string) (*Entry, error) {
 	defer f.Close()
 
 	var entry Entry
-	dec := json.NewDecoder(f)
-	if err := dec.Decode(&entry); err != nil {
+	if err := jsonutil.DecodeJSONFromReader(f, &entry); err != nil {
 		return nil, err
 	}
 

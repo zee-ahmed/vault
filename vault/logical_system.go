@@ -1,11 +1,14 @@
 package vault
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hashicorp/vault/helper/duration"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 	"github.com/mitchellh/mapstructure"
@@ -147,6 +150,30 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 			},
 
 			&framework.Path{
+				Pattern: "auth/(?P<path>.+?)/tune$",
+				Fields: map[string]*framework.FieldSchema{
+					"path": &framework.FieldSchema{
+						Type:        framework.TypeString,
+						Description: strings.TrimSpace(sysHelp["auth_tune"][0]),
+					},
+					"default_lease_ttl": &framework.FieldSchema{
+						Type:        framework.TypeString,
+						Description: strings.TrimSpace(sysHelp["tune_default_lease_ttl"][0]),
+					},
+					"max_lease_ttl": &framework.FieldSchema{
+						Type:        framework.TypeString,
+						Description: strings.TrimSpace(sysHelp["tune_max_lease_ttl"][0]),
+					},
+				},
+				Callbacks: map[logical.Operation]framework.OperationFunc{
+					logical.ReadOperation:   b.handleAuthTuneRead,
+					logical.UpdateOperation: b.handleAuthTuneWrite,
+				},
+				HelpSynopsis:    strings.TrimSpace(sysHelp["auth_tune"][0]),
+				HelpDescription: strings.TrimSpace(sysHelp["auth_tune"][1]),
+			},
+
+			&framework.Path{
 				Pattern: "mounts/(?P<path>.+?)/tune$",
 
 				Fields: map[string]*framework.FieldSchema{
@@ -238,9 +265,13 @@ func NewSystemBackend(core *Core, config *logical.BackendConfig) logical.Backend
 			},
 
 			&framework.Path{
-				Pattern: "renew/(?P<lease_id>.+)",
+				Pattern: "renew" + framework.OptionalParamRegex("url_lease_id"),
 
 				Fields: map[string]*framework.FieldSchema{
+					"url_lease_id": &framework.FieldSchema{
+						Type:        framework.TypeString,
+						Description: strings.TrimSpace(sysHelp["lease_id"][0]),
+					},
 					"lease_id": &framework.FieldSchema{
 						Type:        framework.TypeString,
 						Description: strings.TrimSpace(sysHelp["lease_id"][0]),
@@ -547,12 +578,12 @@ func (b *SystemBackend) handleCapabilitiesAccessor(req *logical.Request, d *fram
 		return logical.ErrorResponse("missing accessor"), nil
 	}
 
-	token, err := b.Core.tokenStore.lookupByAccessor(accessor)
+	aEntry, err := b.Core.tokenStore.lookupByAccessor(accessor)
 	if err != nil {
 		return nil, err
 	}
 
-	capabilities, err := b.Core.Capabilities(token, d.Get("path").(string))
+	capabilities, err := b.Core.Capabilities(aEntry.TokenID, d.Get("path").(string))
 	if err != nil {
 		return nil, err
 	}
@@ -578,11 +609,28 @@ func (b *SystemBackend) handleRekeyRetrieve(
 		return logical.ErrorResponse("no backed-up keys found"), nil
 	}
 
+	keysB64 := map[string][]string{}
+	for k, v := range backup.Keys {
+		for _, j := range v {
+			currB64Keys := keysB64[k]
+			if currB64Keys == nil {
+				currB64Keys = []string{}
+			}
+			key, err := hex.DecodeString(j)
+			if err != nil {
+				return nil, fmt.Errorf("error decoding hex-encoded backup key: %v", err)
+			}
+			currB64Keys = append(currB64Keys, base64.StdEncoding.EncodeToString(key))
+			keysB64[k] = currB64Keys
+		}
+	}
+
 	// Format the status
 	resp := &logical.Response{
 		Data: map[string]interface{}{
-			"nonce": backup.Nonce,
-			"keys":  backup.Keys,
+			"nonce":       backup.Nonce,
+			"keys":        backup.Keys,
+			"keys_base64": keysB64,
 		},
 	}
 
@@ -637,8 +685,8 @@ func (b *SystemBackend) handleMountTable(
 			"type":        entry.Type,
 			"description": entry.Description,
 			"config": map[string]interface{}{
-				"default_lease_ttl": int(entry.Config.DefaultLeaseTTL.Seconds()),
-				"max_lease_ttl":     int(entry.Config.MaxLeaseTTL.Seconds()),
+				"default_lease_ttl": int64(entry.Config.DefaultLeaseTTL.Seconds()),
+				"max_lease_ttl":     int64(entry.Config.MaxLeaseTTL.Seconds()),
 			},
 		}
 
@@ -678,7 +726,7 @@ func (b *SystemBackend) handleMount(
 	case "":
 	case "system":
 	default:
-		tmpDef, err := time.ParseDuration(apiConfig.DefaultLeaseTTL)
+		tmpDef, err := duration.ParseDurationSecond(apiConfig.DefaultLeaseTTL)
 		if err != nil {
 			return logical.ErrorResponse(fmt.Sprintf(
 					"unable to parse default TTL of %s: %s", apiConfig.DefaultLeaseTTL, err)),
@@ -691,7 +739,7 @@ func (b *SystemBackend) handleMount(
 	case "":
 	case "system":
 	default:
-		tmpMax, err := time.ParseDuration(apiConfig.MaxLeaseTTL)
+		tmpMax, err := duration.ParseDurationSecond(apiConfig.MaxLeaseTTL)
 		if err != nil {
 			return logical.ErrorResponse(fmt.Sprintf(
 					"unable to parse max TTL of %s: %s", apiConfig.MaxLeaseTTL, err)),
@@ -729,7 +777,7 @@ func (b *SystemBackend) handleMount(
 
 	// Attempt mount
 	if err := b.Core.mount(me); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: mount %s failed: %v", me.Path, err)
+		b.Backend.Logger().Error("sys: mount failed", "path", me.Path, "error", err)
 		return handleError(err)
 	}
 
@@ -759,7 +807,7 @@ func (b *SystemBackend) handleUnmount(
 
 	// Attempt unmount
 	if err := b.Core.unmount(suffix); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: unmount '%s' failed: %v", suffix, err)
+		b.Backend.Logger().Error("sys: unmount failed", "path", suffix, "error", err)
 		return handleError(err)
 	}
 
@@ -783,11 +831,23 @@ func (b *SystemBackend) handleRemount(
 
 	// Attempt remount
 	if err := b.Core.remount(fromPath, toPath); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: remount '%s' to '%s' failed: %v", fromPath, toPath, err)
+		b.Backend.Logger().Error("sys: remount failed", "from_path", fromPath, "to_path", toPath, "error", err)
 		return handleError(err)
 	}
 
 	return nil, nil
+}
+
+// handleAuthTuneRead is used to get config settings on a auth path
+func (b *SystemBackend) handleAuthTuneRead(
+	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	path := data.Get("path").(string)
+	if path == "" {
+		return logical.ErrorResponse(
+				"path must be specified as a string"),
+			logical.ErrInvalidRequest
+	}
+	return b.handleTuneReadCommon("auth/" + path)
 }
 
 // handleMountTuneRead is used to get config settings on a backend
@@ -800,13 +860,20 @@ func (b *SystemBackend) handleMountTuneRead(
 			logical.ErrInvalidRequest
 	}
 
+	// This call will read both logical backend's configuration as well as auth backends'.
+	// Retaining this behavior for backward compatibility. If this behavior is not desired,
+	// an error can be returned if path has a prefix of "auth/".
+	return b.handleTuneReadCommon(path)
+}
+
+// handleTuneReadCommon returns the config settings of a path
+func (b *SystemBackend) handleTuneReadCommon(path string) (*logical.Response, error) {
 	path = sanitizeMountPath(path)
 
 	sysView := b.Core.router.MatchingSystemView(path)
 	if sysView == nil {
-		err := fmt.Errorf("[ERR] sys: cannot fetch sysview for path %s", path)
-		b.Backend.Logger().Print(err)
-		return handleError(err)
+		b.Backend.Logger().Error("sys: cannot fetch sysview", "path", path)
+		return handleError(fmt.Errorf("sys: cannot fetch sysview for path %s", path))
 	}
 
 	resp := &logical.Response{
@@ -819,32 +886,48 @@ func (b *SystemBackend) handleMountTuneRead(
 	return resp, nil
 }
 
+// handleAuthTuneWrite is used to set config settings on an auth path
+func (b *SystemBackend) handleAuthTuneWrite(
+	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	path := data.Get("path").(string)
+	if path == "" {
+		return logical.ErrorResponse("path must be specified as a string"),
+			logical.ErrInvalidRequest
+	}
+	return b.handleTuneWriteCommon("auth/"+path, data)
+}
+
 // handleMountTuneWrite is used to set config settings on a backend
 func (b *SystemBackend) handleMountTuneWrite(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	path := data.Get("path").(string)
 	if path == "" {
-		return logical.ErrorResponse(
-				"path must be specified as a string"),
+		return logical.ErrorResponse("path must be specified as a string"),
 			logical.ErrInvalidRequest
 	}
+	// This call will write both logical backend's configuration as well as auth backends'.
+	// Retaining this behavior for backward compatibility. If this behavior is not desired,
+	// an error can be returned if path has a prefix of "auth/".
+	return b.handleTuneWriteCommon(path, data)
+}
 
+// handleTuneWriteCommon is used to set config settings on a path
+func (b *SystemBackend) handleTuneWriteCommon(
+	path string, data *framework.FieldData) (*logical.Response, error) {
 	path = sanitizeMountPath(path)
 
 	// Prevent protected paths from being changed
 	for _, p := range untunableMounts {
 		if strings.HasPrefix(path, p) {
-			err := fmt.Errorf("[ERR] core: cannot tune '%s'", path)
-			b.Backend.Logger().Print(err)
-			return handleError(err)
+			b.Backend.Logger().Error("sys: cannot tune this mount", "path", path)
+			return handleError(fmt.Errorf("sys: cannot tune '%s'", path))
 		}
 	}
 
 	mountEntry := b.Core.router.MatchingMountEntry(path)
 	if mountEntry == nil {
-		err := fmt.Errorf("[ERR] sys: tune of path '%s' failed: no mount entry found", path)
-		b.Backend.Logger().Print(err)
-		return handleError(err)
+		b.Backend.Logger().Error("sys: tune failed: no mount entry found", "path", path)
+		return handleError(fmt.Errorf("sys: tune of path '%s' failed: no mount entry found", path))
 	}
 
 	var lock *sync.RWMutex
@@ -865,7 +948,7 @@ func (b *SystemBackend) handleMountTuneWrite(
 			tmpDef := time.Duration(0)
 			newDefault = &tmpDef
 		default:
-			tmpDef, err := time.ParseDuration(defTTL)
+			tmpDef, err := duration.ParseDurationSecond(defTTL)
 			if err != nil {
 				return handleError(err)
 			}
@@ -879,7 +962,7 @@ func (b *SystemBackend) handleMountTuneWrite(
 			tmpMax := time.Duration(0)
 			newMax = &tmpMax
 		default:
-			tmpMax, err := time.ParseDuration(maxTTL)
+			tmpMax, err := duration.ParseDurationSecond(maxTTL)
 			if err != nil {
 				return handleError(err)
 			}
@@ -891,7 +974,7 @@ func (b *SystemBackend) handleMountTuneWrite(
 			defer lock.Unlock()
 
 			if err := b.tuneMountTTLs(path, &mountEntry.Config, newDefault, newMax); err != nil {
-				b.Backend.Logger().Printf("[ERR] sys: tune of path '%s' failed: %v", path, err)
+				b.Backend.Logger().Error("sys: tuning failed", "path", path, "error", err)
 				return handleError(err)
 			}
 		}
@@ -905,6 +988,9 @@ func (b *SystemBackend) handleRenew(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	// Get all the options
 	leaseID := data.Get("lease_id").(string)
+	if leaseID == "" {
+		leaseID = data.Get("url_lease_id").(string)
+	}
 	incrementRaw := data.Get("increment").(int)
 
 	// Convert the increment
@@ -913,7 +999,7 @@ func (b *SystemBackend) handleRenew(
 	// Invoke the expiration manager directly
 	resp, err := b.Core.expiration.Renew(leaseID, increment)
 	if err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: renew '%s' failed: %v", leaseID, err)
+		b.Backend.Logger().Error("sys: lease renewal failed", "lease_id", leaseID, "error", err)
 		return handleError(err)
 	}
 	return resp, err
@@ -927,7 +1013,7 @@ func (b *SystemBackend) handleRevoke(
 
 	// Invoke the expiration manager directly
 	if err := b.Core.expiration.Revoke(leaseID); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: revoke '%s' failed: %v", leaseID, err)
+		b.Backend.Logger().Error("sys: lease revocation failed", "lease_id", leaseID, "error", err)
 		return handleError(err)
 	}
 	return nil, nil
@@ -959,7 +1045,7 @@ func (b *SystemBackend) handleRevokePrefixCommon(
 		err = b.Core.expiration.RevokePrefix(prefix)
 	}
 	if err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: revoke prefix '%s' failed: %v", prefix, err)
+		b.Backend.Logger().Error("sys: revoke prefix failed", "prefix", prefix, "error", err)
 		return handleError(err)
 	}
 	return nil, nil
@@ -975,9 +1061,13 @@ func (b *SystemBackend) handleAuthTable(
 		Data: make(map[string]interface{}),
 	}
 	for _, entry := range b.Core.auth.Entries {
-		info := map[string]string{
+		info := map[string]interface{}{
 			"type":        entry.Type,
 			"description": entry.Description,
+			"config": map[string]interface{}{
+				"default_lease_ttl": int64(entry.Config.DefaultLeaseTTL.Seconds()),
+				"max_lease_ttl":     int64(entry.Config.MaxLeaseTTL.Seconds()),
+			},
 		}
 		resp.Data[entry.Path] = info
 	}
@@ -1010,7 +1100,7 @@ func (b *SystemBackend) handleEnableAuth(
 
 	// Attempt enabling
 	if err := b.Core.enableCredential(me); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: enable auth %s failed: %v", me.Path, err)
+		b.Backend.Logger().Error("sys: enable auth mount failed", "path", me.Path, "error", err)
 		return handleError(err)
 	}
 	return nil, nil
@@ -1028,7 +1118,7 @@ func (b *SystemBackend) handleDisableAuth(
 
 	// Attempt disable
 	if err := b.Core.disableCredential(suffix); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: disable auth '%s' failed: %v", suffix, err)
+		b.Backend.Logger().Error("sys: disable auth mount failed", "path", suffix, "error", err)
 		return handleError(err)
 	}
 	return nil, nil
@@ -1180,7 +1270,7 @@ func (b *SystemBackend) handleEnableAudit(
 
 	// Attempt enabling
 	if err := b.Core.enableAudit(me); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: enable audit %s failed: %v", me.Path, err)
+		b.Backend.Logger().Error("sys: enable audit mount failed", "path", me.Path, "error", err)
 		return handleError(err)
 	}
 	return nil, nil
@@ -1193,7 +1283,7 @@ func (b *SystemBackend) handleDisableAudit(
 
 	// Attempt disable
 	if err := b.Core.disableAudit(path); err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: disable audit '%s' failed: %v", path, err)
+		b.Backend.Logger().Error("sys: disable audit mount failed", "path", path, "error", err)
 		return handleError(err)
 	}
 	return nil, nil
@@ -1282,7 +1372,7 @@ func (b *SystemBackend) handleKeyStatus(
 	resp := &logical.Response{
 		Data: map[string]interface{}{
 			"term":         info.Term,
-			"install_time": info.InstallTime.Format(time.RFC3339),
+			"install_time": info.InstallTime.Format(time.RFC3339Nano),
 		},
 	}
 	return resp, nil
@@ -1294,22 +1384,22 @@ func (b *SystemBackend) handleRotate(
 	// Rotate to the new term
 	newTerm, err := b.Core.barrier.Rotate()
 	if err != nil {
-		b.Backend.Logger().Printf("[ERR] sys: failed to create new encryption key: %v", err)
+		b.Backend.Logger().Error("sys: failed to create new encryption key", "error", err)
 		return handleError(err)
 	}
-	b.Backend.Logger().Printf("[INFO] sys: installed new encryption key")
+	b.Backend.Logger().Info("sys: installed new encryption key")
 
 	// In HA mode, we need to an upgrade path for the standby instances
 	if b.Core.ha != nil {
 		// Create the upgrade path to the new term
 		if err := b.Core.barrier.CreateUpgrade(newTerm); err != nil {
-			b.Backend.Logger().Printf("[ERR] sys: failed to create new upgrade for key term %d: %v", newTerm, err)
+			b.Backend.Logger().Error("sys: failed to create new upgrade", "term", newTerm, "error", err)
 		}
 
 		// Schedule the destroy of the upgrade path
 		time.AfterFunc(keyRotateGracePeriod, func() {
 			if err := b.Core.barrier.DestroyUpgrade(newTerm); err != nil {
-				b.Backend.Logger().Printf("[ERR] sys: failed to destroy upgrade for key term %d: %v", newTerm, err)
+				b.Backend.Logger().Error("sys: failed to destroy upgrade", "term", newTerm, "error", err)
 			}
 		})
 	}
@@ -1467,8 +1557,16 @@ This path responds to the following HTTP methods.
 		`,
 	},
 
+	"auth_tune": {
+		"Tune the configuration parameters for an auth path.",
+		`Read and write the 'default-lease-ttl' and 'max-lease-ttl' values of
+the auth path.`,
+	},
+
 	"mount_tune": {
 		"Tune backend configuration parameters for this mount.",
+		`Read and write the 'default-lease-ttl' and 'max-lease-ttl' values of
+the mount.`,
 	},
 
 	"renew": {

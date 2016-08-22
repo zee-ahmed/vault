@@ -4,13 +4,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/mgutz/logxi/v1"
 
 	"github.com/armon/go-metrics"
 	"github.com/coreos/etcd/client"
@@ -68,11 +69,11 @@ type EtcdBackend struct {
 	path       string
 	kAPI       client.KeysAPI
 	permitPool *PermitPool
-	logger     *log.Logger
+	logger     log.Logger
 }
 
 // newEtcdBackend constructs a etcd backend using a given machine address.
-func newEtcdBackend(conf map[string]string, logger *log.Logger) (Backend, error) {
+func newEtcdBackend(conf map[string]string, logger log.Logger) (Backend, error) {
 	// Get the etcd path form the configuration.
 	path, ok := conf["path"]
 	if !ok {
@@ -88,6 +89,10 @@ func newEtcdBackend(conf map[string]string, logger *log.Logger) (Backend, error)
 	machines := "http://127.0.0.1:2379"
 	if address, ok := conf["address"]; ok {
 		machines = address
+	}
+	machinesEnv := os.Getenv("ETCD_ADDR")
+	if machinesEnv != "" {
+		machines = machinesEnv
 	}
 	machinesParsed := strings.Split(machines, EtcdMachineDelimiter)
 
@@ -307,6 +312,12 @@ func (c *EtcdBackend) LockWith(key, value string) (Lock, error) {
 		value:           value,
 		semaphoreDirKey: c.nodePathLock(key),
 	}, nil
+}
+
+// HAEnabled indicates whether the HA functionality should be exposed.
+// Currently always returns true.
+func (e *EtcdBackend) HAEnabled() bool {
+	return true
 }
 
 // EtcdLock emplements a lock using and etcd backend.

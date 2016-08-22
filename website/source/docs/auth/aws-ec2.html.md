@@ -92,7 +92,7 @@ Subsequent authentication attempts by the client require the nonce to match;
 since only the original client knows the nonce, only the original client is
 allowed to reauthenticate. (This is the reason that this is a whitelist rather
 than a blacklist; by default, it's keeping track of clients allowed to
-reauthenticate, rather than those that are not.) 
+reauthenticate, rather than those that are not.)
 
 It is up to the client to behave correctly with respect to the nonce; if the
 client stores the nonce on disk it can survive reboots, but could also give
@@ -242,10 +242,11 @@ endpoints.
 
 ### Varying Public Certificates
 
-The AWS public certificate which contains the public key used to verify the
-PKCS#7 signature varies for groups of regions. The default public certificate
-provided with the backend is applicable for many regions. Instances whose PKCS#7
-signatures cannot be verified by the default public certificate, can register a
+The AWS public certificate, which contains the public key used to verify the
+PKCS#7 signature, varies for different AWS regions. The primary AWS public
+certificate, which covers most AWS regions, is already included in Vault and
+does not need to be added. Instances whose PKCS#7 signatures cannot be
+verified by the default public certificate included in Vault can register a
 different public certificate which can be found [here]
 (http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-identity-documents.html),
 via the `auth/aws-ec2/config/certificate/<cert_name>` endpoint.
@@ -271,7 +272,7 @@ $ vault auth-enable aws-ec2
 #### Configure the credentials required to make AWS API calls
 
 Note: the client uses the official AWS SDK and will use environment variable or
-IAM role-provided credentials if available.
+IAM role-provided credentials if available. The AWS credentials used require the IAM action `ec2:DescribeInstance` to be allowed.
 
 ```
 $ vault write auth/aws-ec2/config/client secret_key=vCtSM8ZUEQ3mOFVlYPBQkf2sO6F/W7a5TVzrl3Oj access_key=VKIAJBRHKH6EVTTNXDHA
@@ -313,7 +314,7 @@ curl -X POST -H "x-vault-token:123" "http://127.0.0.1:8200/v1/auth/aws-ec2/role/
 #### Perform the login operation
 
 ```
-curl -X POST "http://127.0.0.1:8200/v1/auth/aws-ec2/login" -d '{"role":"dev-role","pkcs7":"MIAGCSqGSIb3DQEHAqCAMIACAQExCzAJBgUrDgMCGgUAMIAGCSqGSIb3DQEHAaCAJIAEggGmewogICJkZXZwYXlQcm9kdWN0Q29kZXMiIDogbnVsbCwKICAicHJpdmF0ZUlwIiA6ICIxNzIuMzEuNjMuNjAiLAogICJhdmFpbGFiaWxpdHlab25lIiA6ICJ1cy1lYXN0LTFjIiwKICAidmVyc2lvbiIgOiAiMjAxMC0wOC0zMSIsCiAgImluc3RhbmNlSWQiIDogImktZGUwZjEzNDQiLAogICJiaWxsaW5nUHJvZHVjdHMiIDogbnVsbCwKICAiaW5zdGFuY2VUeXBlIiA6ICJ0Mi5taWNybyIsCiAgImFjY291bnRJZCIgOiAiMjQxNjU2NjE1ODU5IiwKICAiaW1hZ2VJZCIgOiAiYW1pLWZjZTNjNjk2IiwKICAicGVuZGluZ1RpbWUiIDogIjIwMTYtMDQtMDVUMTY6MjY6NTVaIiwKICAiYXJjaGl0ZWN0dXJlIiA6ICJ4ODZfNjQiLAogICJrZXJuZWxJZCIgOiBudWxsLAogICJyYW1kaXNrSWQiIDogbnVsbCwKICAicmVnaW9uIiA6ICJ1cy1lYXN0LTEiCn0AAAAAAAAxggEXMIIBEwIBATBpMFwxCzAJBgNVBAYTAlVTMRkwFwYDVQQIExBXYXNoaW5ndG9uIFN0YXRlMRAwDgYDVQQHEwdTZWF0dGxlMSAwHgYDVQQKExdBbWF6b24gV2ViIFNlcnZpY2VzIExMQwIJAJa6SNnlXhpnMAkGBSsOAwIaBQCgXTAYBgkqhkiG9w0BCQMxCwYJKoZIhvcNAQcBMBwGCSqGSIb3DQEJBTEPFw0xNjA0MDUxNjI3MDBaMCMGCSqGSIb3DQEJBDEWBBRtiynzMTNfTw1TV/d8NvfgVw+XfTAJBgcqhkjOOAQDBC4wLAIUVfpVcNYoOKzN1c+h1Vsm/c5U0tQCFAK/K72idWrONIqMOVJ8Uen0wYg4AAAAAAAA","nonce":"vault-client-nonce"}'
+curl -X POST "http://127.0.0.1:8200/v1/auth/aws-ec2/login" -d '{"role":"dev-role","pkcs7":"$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/pkcs7 | tr -d '\n')","nonce":"vault-client-nonce"}'
 ```
 
 
@@ -405,7 +406,7 @@ The response will be in JSON. For example:
   <dt>Description</dt>
     Returns the previously configured AWS access credentials.
   <dd>
-    
+
   </dd>
 
   <dt>Method</dt>
@@ -790,11 +791,11 @@ The response will be in JSON. For example:
 <dl class="api">
   <dt>Description</dt>
   <dd>
-    Registers a role in the backend. Only those instances which are using the role registered using this endpoint,
-    will be able to perform the login operation. Constraints can be specified on the role, that are applied on the
-    instances attempting to login. Currently only one constraint is supported which is 'bound_ami_id', which must
-    be specified. Going forward, when more than one constraint is supported, the requirement will be to specify at
-    least one constraint, but not necessarily 'bound_ami_id'.
+    Registers a role in the backend. Only those instances which are using
+the role registered using this endpoint, will be able to perform the login
+operation. Contraints can be specified on the role, that are applied on the
+instances attempting to login. At least one constraint should be specified
+on the role.
   </dd>
 
   <dt>Method</dt>
@@ -815,8 +816,22 @@ The response will be in JSON. For example:
     <ul>
       <li>
         <span class="param">bound_ami_id</span>
-        <span class="param-flags">required</span>
-        If set, defines a constraint on the EC2 instances that they should be using the AMI ID specified by this parameter.
+        <span class="param-flags">optional</span>
+        If set, defines a constraint on the EC2 instances that they
+should be using the AMI ID specified by this parameter.
+      </li>
+    </ul>
+    <ul>
+      <li>
+        <span class="param">bound_account_id</span>
+        <span class="param-flags">optional</span>
+        If set, defines a constraint on the EC2 instances that the account ID
+in its identity document to match the one specified by this parameter.
+      </li>
+      <li>
+        <span class="param">bound_iam_role_arn</span>
+        <span class="param-flags">optional</span>
+        If set, defines a constraint on the EC2 instances that they should be using the IAM Role ARN specified by this parameter.
       </li>
     </ul>
     <ul>
@@ -829,6 +844,12 @@ The response will be in JSON. For example:
         Defaults to an empty string, meaning that role tags are disabled.
       </li>
     </ul>
+    <li>
+      <span class="param">ttl</span>
+      <span class="param-flags">optional</span>
+      The TTL period of tokens issued using this role, provided as "1h", where hour is
+      the largest suffix.
+    </li>
     <ul>
       <li>
         <span class="param">max_ttl</span>
@@ -1093,7 +1114,7 @@ The response will be in JSON. For example:
       <li>
         <span class="param">pkcs7</span>
         <span class="param-flags">required</span>
-        PKCS7 signature of the identity document.
+        PKCS7 signature of the identity document with all `\n` characters removed.
       </li>
     </ul>
     <ul>

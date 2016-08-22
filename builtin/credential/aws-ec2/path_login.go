@@ -1,7 +1,6 @@
 package awsec2
 
 import (
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"time"
@@ -9,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/fullsailor/pkcs7"
+	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -191,8 +191,7 @@ func (b *backend) parseIdentityDocument(s logical.Storage, pkcs7B64 string) (*id
 	}
 
 	var identityDoc identityDocument
-	err = json.Unmarshal(pkcs7Data.Content, &identityDoc)
-	if err != nil {
+	if err := jsonutil.DecodeJSON(pkcs7Data.Content, &identityDoc); err != nil {
 		return nil, err
 	}
 
@@ -241,14 +240,34 @@ func (b *backend) pathLoginUpdate(
 		return nil, err
 	}
 	if roleEntry == nil {
-		return logical.ErrorResponse("role entry not found"), nil
+		return logical.ErrorResponse(fmt.Sprintf("entry for role '%s' not found", roleName)), nil
 	}
 
-	// Only 'bound_ami_id' constraint is supported on the role currently.
-	// Check if the AMI ID of the instance trying to login matches the
+	// Verify that the AMI ID of the instance trying to login matches the
 	// AMI ID specified as a constraint on the role.
-	if identityDoc.AmiID != roleEntry.BoundAmiID {
-		return logical.ErrorResponse(fmt.Sprintf("AMI ID %s does not belong to role %s", identityDoc.AmiID, roleName)), nil
+	if roleEntry.BoundAmiID != "" && identityDoc.AmiID != roleEntry.BoundAmiID {
+		return logical.ErrorResponse(fmt.Sprintf("AMI ID '%s' does not belong to role '%s'", identityDoc.AmiID, roleName)), nil
+	}
+
+	// Verify that the AccountID of the instance trying to login matches the
+	// AccountID specified as a constraint on the role.
+	if roleEntry.BoundAccountID != "" && identityDoc.AccountID != roleEntry.BoundAccountID {
+		return logical.ErrorResponse(fmt.Sprintf("Account ID '%s' does not belong to role '%s'", identityDoc.AccountID, roleName)), nil
+	}
+
+	// Check if the IAM Role ARN of the instance trying to login matches the
+	// IAM Role ARN specified as a constraint on the role.
+	if roleEntry.BoundIamARN != "" {
+		if instanceDesc.Reservations[0].Instances[0].IamInstanceProfile == nil {
+			return nil, fmt.Errorf("IAM Instance Profile in the instance description is nil")
+		}
+		if instanceDesc.Reservations[0].Instances[0].IamInstanceProfile.Arn == nil {
+			return nil, fmt.Errorf("ARN in the instance description is nil")
+		}
+		iamRoleArn := *instanceDesc.Reservations[0].Instances[0].IamInstanceProfile.Arn
+		if iamRoleArn != roleEntry.BoundIamARN {
+			return logical.ErrorResponse(fmt.Sprintf("IAM Role ARN %s does not belong to role %s", iamRoleArn, roleName)), nil
+		}
 	}
 
 	// Get the entry from the identity whitelist, if there is one.
@@ -337,7 +356,7 @@ func (b *backend) pathLoginUpdate(
 	}
 
 	// Save the login attempt in the identity whitelist.
-	currentTime := time.Now().UTC()
+	currentTime := time.Now()
 	if storedIdentity == nil {
 		// Role, ClientNonce and CreationTime of the identity entry,
 		// once set, should never change.
@@ -381,15 +400,21 @@ func (b *backend) pathLoginUpdate(
 			},
 			LeaseOptions: logical.LeaseOptions{
 				Renewable: true,
-				TTL:       b.System().DefaultLeaseTTL(),
+				TTL:       roleEntry.TTL,
 			},
 		},
 	}
 
 	// Cap the TTL value.
-	if shortestMaxTTL < resp.Auth.TTL {
-		resp.Auth.TTL = shortestMaxTTL
+	shortestTTL := b.System().DefaultLeaseTTL()
+	if roleEntry.TTL > time.Duration(0) && roleEntry.TTL < shortestTTL {
+		shortestTTL = roleEntry.TTL
 	}
+	if shortestMaxTTL < shortestTTL {
+		resp.AddWarning(fmt.Sprintf("Effective ttl of %q exceeded the effective max_ttl of %q; ttl value is capped appropriately", (shortestTTL / time.Second).String(), (shortestMaxTTL / time.Second).String()))
+		shortestTTL = shortestMaxTTL
+	}
+	resp.Auth.TTL = shortestTTL
 
 	return resp, nil
 
@@ -485,12 +510,15 @@ func (b *backend) pathLoginRenew(
 	// Cross check that the instance is still in 'running' state
 	_, err := b.validateInstance(req.Storage, instanceID, region)
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify instance ID: %s", err)
+		return nil, fmt.Errorf("failed to verify instance ID '%s': %s", instanceID, err)
 	}
 
 	storedIdentity, err := whitelistIdentityEntry(req.Storage, instanceID)
 	if err != nil {
 		return nil, err
+	}
+	if storedIdentity == nil {
+		return nil, fmt.Errorf("failed to verify the whitelist identity entry for instance ID: %s", instanceID)
 	}
 
 	// Ensure that role entry is not deleted.
@@ -526,8 +554,17 @@ func (b *backend) pathLoginRenew(
 		longestMaxTTL = rTagMaxTTL
 	}
 
+	// Cap the TTL value.
+	shortestTTL := b.System().DefaultLeaseTTL()
+	if roleEntry.TTL > time.Duration(0) && roleEntry.TTL < shortestTTL {
+		shortestTTL = roleEntry.TTL
+	}
+	if shortestMaxTTL < shortestTTL {
+		shortestTTL = shortestMaxTTL
+	}
+
 	// Only LastUpdatedTime and ExpirationTime change and all other fields remain the same.
-	currentTime := time.Now().UTC()
+	currentTime := time.Now()
 	storedIdentity.LastUpdatedTime = currentTime
 	storedIdentity.ExpirationTime = currentTime.Add(longestMaxTTL)
 
@@ -535,7 +572,7 @@ func (b *backend) pathLoginRenew(
 		return nil, err
 	}
 
-	return framework.LeaseExtend(req.Auth.TTL, shortestMaxTTL, b.System())(req, data)
+	return framework.LeaseExtend(shortestTTL, shortestMaxTTL, b.System())(req, data)
 }
 
 // Struct to represent items of interest from the EC2 instance identity document.
@@ -543,6 +580,7 @@ type identityDocument struct {
 	Tags        map[string]interface{} `json:"tags,omitempty" structs:"tags" mapstructure:"tags"`
 	InstanceID  string                 `json:"instanceId,omitempty" structs:"instanceId" mapstructure:"instanceId"`
 	AmiID       string                 `json:"imageId,omitempty" structs:"imageId" mapstructure:"imageId"`
+	AccountID   string                 `json:"accountId,omitempty" structs:"accountId" mapstructure:"accountId"`
 	Region      string                 `json:"region,omitempty" structs:"region" mapstructure:"region"`
 	PendingTime string                 `json:"pendingTime,omitempty" structs:"pendingTime" mapstructure:"pendingTime"`
 }

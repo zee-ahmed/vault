@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/vault/version"
 
 	credAppId "github.com/hashicorp/vault/builtin/credential/app-id"
+	credAppRole "github.com/hashicorp/vault/builtin/credential/approle"
 	credAwsEc2 "github.com/hashicorp/vault/builtin/credential/aws-ec2"
 	credCert "github.com/hashicorp/vault/builtin/credential/cert"
 	credGitHub "github.com/hashicorp/vault/builtin/credential/github"
@@ -18,6 +19,7 @@ import (
 	"github.com/hashicorp/vault/builtin/logical/aws"
 	"github.com/hashicorp/vault/builtin/logical/cassandra"
 	"github.com/hashicorp/vault/builtin/logical/consul"
+	"github.com/hashicorp/vault/builtin/logical/mongodb"
 	"github.com/hashicorp/vault/builtin/logical/mssql"
 	"github.com/hashicorp/vault/builtin/logical/mysql"
 	"github.com/hashicorp/vault/builtin/logical/pki"
@@ -64,6 +66,7 @@ func Commands(metaPtr *meta.Meta) map[string]cli.CommandFactory {
 					"syslog": auditSyslog.Factory,
 				},
 				CredentialBackends: map[string]logical.Factory{
+					"approle":  credAppRole.Factory,
 					"cert":     credCert.Factory,
 					"aws-ec2":  credAwsEc2.Factory,
 					"app-id":   credAppId.Factory,
@@ -78,6 +81,7 @@ func Commands(metaPtr *meta.Meta) map[string]cli.CommandFactory {
 					"cassandra":  cassandra.Factory,
 					"pki":        pki.Factory,
 					"transit":    transit.Factory,
+					"mongodb":    mongodb.Factory,
 					"mssql":      mssql.Factory,
 					"mysql":      mysql.Factory,
 					"ssh":        ssh.Factory,
