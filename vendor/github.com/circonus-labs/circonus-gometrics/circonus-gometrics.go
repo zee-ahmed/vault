@@ -1,3 +1,7 @@
+// Copyright 2016 Circonus, Inc. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 // Package circonusgometrics provides instrumentation for your applications in the form
 // of counters, gauges and histograms and allows you to publish them to
 // Circonus
@@ -242,7 +246,13 @@ func (m *CirconusMetrics) Flush() {
 		}
 	}
 
-	m.submit(output, newMetrics)
+	if len(output) > 0 {
+		m.submit(output, newMetrics)
+	} else {
+		if m.Debug {
+			m.Log.Println("[DEBUG] No metrics to send, skipping")
+		}
+	}
 
 	m.flushmu.Lock()
 	m.flushing = false

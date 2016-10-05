@@ -10,6 +10,107 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
+func TestAppRole_CIDRSubset(t *testing.T) {
+	var resp *logical.Response
+	var err error
+
+	b, storage := createBackendWithStorage(t)
+
+	roleData := map[string]interface{}{
+		"role_id":         "role-id-123",
+		"policies":        "a,b",
+		"bound_cidr_list": "127.0.0.1/24",
+	}
+
+	roleReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/testrole1",
+		Storage:   storage,
+		Data:      roleData,
+	}
+
+	resp, err = b.HandleRequest(roleReq)
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("err: %v resp: %#v", err, resp)
+	}
+
+	secretIDData := map[string]interface{}{
+		"cidr_list": "127.0.0.1/16",
+	}
+	secretIDReq := &logical.Request{
+		Operation: logical.UpdateOperation,
+		Storage:   storage,
+		Path:      "role/testrole1/secret-id",
+		Data:      secretIDData,
+	}
+
+	resp, err = b.HandleRequest(secretIDReq)
+	if resp != nil || resp.IsError() {
+		t.Fatalf("resp:%#v", resp)
+	}
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	roleData["bound_cidr_list"] = "192.168.27.29/16,172.245.30.40/24,10.20.30.40/30"
+	roleReq.Operation = logical.UpdateOperation
+	resp, err = b.HandleRequest(roleReq)
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("err: %v resp: %#v", err, resp)
+	}
+
+	secretIDData["cidr_list"] = "192.168.27.29/20,172.245.30.40/25,10.20.30.40/32"
+	resp, err = b.HandleRequest(secretIDReq)
+	if resp != nil && resp.IsError() {
+		t.Fatalf("resp: %#v", resp)
+	}
+}
+
+func TestAppRole_RoleConstraints(t *testing.T) {
+	var resp *logical.Response
+	var err error
+	b, storage := createBackendWithStorage(t)
+
+	roleData := map[string]interface{}{
+		"role_id":  "role-id-123",
+		"policies": "a,b",
+	}
+
+	roleReq := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "role/testrole1",
+		Storage:   storage,
+		Data:      roleData,
+	}
+
+	// Set bind_secret_id, which is enabled by default
+	resp, err = b.HandleRequest(roleReq)
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("err:%v resp:%#v", err, resp)
+	}
+
+	// Set bound_cidr_list alone by explicitly disabling bind_secret_id
+	roleReq.Operation = logical.UpdateOperation
+	roleData["bind_secret_id"] = false
+	roleData["bound_cidr_list"] = "0.0.0.0/0"
+	resp, err = b.HandleRequest(roleReq)
+	if err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("err:%v resp:%#v", err, resp)
+	}
+
+	// Remove both constraints
+	roleReq.Operation = logical.UpdateOperation
+	roleData["bound_cidr_list"] = ""
+	roleData["bind_secret_id"] = false
+	resp, err = b.HandleRequest(roleReq)
+	if resp != nil && resp.IsError() {
+		t.Fatalf("resp:%#v", err, resp)
+	}
+	if err == nil {
+		t.Fatalf("expected an error")
+	}
+}
+
 func TestAppRole_RoleIDUniqueness(t *testing.T) {
 	var resp *logical.Response
 	var err error
@@ -165,12 +266,19 @@ func TestAppRole_RoleSecretIDReadDelete(t *testing.T) {
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("err:%v resp:%#v", err, resp)
 	}
+
 	secretID := resp.Data["secret_id"].(string)
+	if secretID == "" {
+		t.Fatal("expected non empty secret ID")
+	}
 
 	secretIDReq := &logical.Request{
-		Operation: logical.ReadOperation,
+		Operation: logical.UpdateOperation,
 		Storage:   storage,
-		Path:      "role/role1/secret-id/" + secretID,
+		Path:      "role/role1/secret-id/lookup",
+		Data: map[string]interface{}{
+			"secret_id": secretID,
+		},
 	}
 	resp, err = b.HandleRequest(secretIDReq)
 	if err != nil || (resp != nil && resp.IsError()) {
@@ -180,13 +288,19 @@ func TestAppRole_RoleSecretIDReadDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	secretIDReq.Operation = logical.DeleteOperation
-	resp, err = b.HandleRequest(secretIDReq)
+	deleteSecretIDReq := &logical.Request{
+		Operation: logical.DeleteOperation,
+		Storage:   storage,
+		Path:      "role/role1/secret-id/destroy",
+		Data: map[string]interface{}{
+			"secret_id": secretID,
+		},
+	}
+	resp, err = b.HandleRequest(deleteSecretIDReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("err:%v resp:%#v", err, resp)
 	}
 
-	secretIDReq.Operation = logical.ReadOperation
 	resp, err = b.HandleRequest(secretIDReq)
 	if resp != nil && resp.IsError() {
 		t.Fatalf("error response:%#v", err, resp)
@@ -224,9 +338,12 @@ func TestAppRole_RoleSecretIDAccessorReadDelete(t *testing.T) {
 	hmacSecretID := resp.Data["keys"].([]string)[0]
 
 	hmacReq := &logical.Request{
-		Operation: logical.ReadOperation,
+		Operation: logical.UpdateOperation,
 		Storage:   storage,
-		Path:      "role/role1/secret-id-accessor/" + hmacSecretID,
+		Path:      "role/role1/secret-id-accessor/lookup",
+		Data: map[string]interface{}{
+			"secret_id_accessor": hmacSecretID,
+		},
 	}
 	resp, err = b.HandleRequest(hmacReq)
 	if err != nil || (resp != nil && resp.IsError()) {
@@ -236,7 +353,7 @@ func TestAppRole_RoleSecretIDAccessorReadDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hmacReq.Operation = logical.DeleteOperation
+	hmacReq.Path = "role/role1/secret-id-accessor/destroy"
 	resp, err = b.HandleRequest(hmacReq)
 	if err != nil || (resp != nil && resp.IsError()) {
 		t.Fatalf("err:%v resp:%#v", err, resp)

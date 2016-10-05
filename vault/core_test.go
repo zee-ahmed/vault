@@ -56,7 +56,10 @@ func TestCore_Unseal_MultiShare(t *testing.T) {
 		SecretShares:    5,
 		SecretThreshold: 3,
 	}
-	res, err := c.Initialize(sealConf, nil)
+	res, err := c.Initialize(&InitParams{
+		BarrierConfig:  sealConf,
+		RecoveryConfig: nil,
+	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -141,7 +144,10 @@ func TestCore_Unseal_Single(t *testing.T) {
 		SecretShares:    1,
 		SecretThreshold: 1,
 	}
-	res, err := c.Initialize(sealConf, nil)
+	res, err := c.Initialize(&InitParams{
+		BarrierConfig:  sealConf,
+		RecoveryConfig: nil,
+	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -196,7 +202,10 @@ func TestCore_Route_Sealed(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
-	res, err := c.Initialize(sealConf, nil)
+	res, err := c.Initialize(&InitParams{
+		BarrierConfig:  sealConf,
+		RecoveryConfig: nil,
+	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -869,7 +878,7 @@ func TestCore_HandleRequest_CreateToken_Lease(t *testing.T) {
 		Path:         "auth/token/create",
 		DisplayName:  "token",
 		CreationTime: te.CreationTime,
-		TTL:          time.Hour * 24 * 30,
+		TTL:          time.Hour * 24 * 32,
 	}
 	if !reflect.DeepEqual(te, expect) {
 		t.Fatalf("Bad: %#v expect: %#v", te, expect)
@@ -914,7 +923,7 @@ func TestCore_HandleRequest_CreateToken_NoDefaultPolicy(t *testing.T) {
 		Path:         "auth/token/create",
 		DisplayName:  "token",
 		CreationTime: te.CreationTime,
-		TTL:          time.Hour * 24 * 30,
+		TTL:          time.Hour * 24 * 32,
 	}
 	if !reflect.DeepEqual(te, expect) {
 		t.Fatalf("Bad: %#v expect: %#v", te, expect)
@@ -1783,8 +1792,11 @@ func TestCore_RenewToken_SingleRegister(t *testing.T) {
 	newClient := resp.Auth.ClientToken
 
 	// Renew the token
-	req = logical.TestRequest(t, logical.UpdateOperation, "auth/token/renew/"+newClient)
+	req = logical.TestRequest(t, logical.UpdateOperation, "auth/token/renew")
 	req.ClientToken = newClient
+	req.Data = map[string]interface{}{
+		"token": newClient,
+	}
 	resp, err = c.HandleRequest(req)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -1799,7 +1811,10 @@ func TestCore_RenewToken_SingleRegister(t *testing.T) {
 	}
 
 	// Verify our token is still valid (e.g. we did not get invalided by the revoke)
-	req = logical.TestRequest(t, logical.ReadOperation, "auth/token/lookup/"+newClient)
+	req = logical.TestRequest(t, logical.UpdateOperation, "auth/token/lookup")
+	req.Data = map[string]interface{}{
+		"token": newClient,
+	}
 	req.ClientToken = newClient
 	resp, err = c.HandleRequest(req)
 	if err != nil {
@@ -1899,7 +1914,10 @@ path "secret/*" {
 	}
 
 	// Renew the lease
-	req = logical.TestRequest(t, logical.UpdateOperation, "sys/renew/"+resp.Secret.LeaseID)
+	req = logical.TestRequest(t, logical.UpdateOperation, "sys/renew")
+	req.Data = map[string]interface{}{
+		"lease_id": resp.Secret.LeaseID,
+	}
 	req.ClientToken = lresp.Auth.ClientToken
 	_, err = c.HandleRequest(req)
 	if err != nil {

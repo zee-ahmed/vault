@@ -172,7 +172,7 @@ the default on versions prior to that.
   <dd>
     <ul>
       <li>
-        <span class="param">verify-connection</span>
+        <span class="param">verify_connection</span>
         <span class="param-flags">optional</span>
 	If set, connection_url is verified by actually connecting to the database.
 	Defaults to true.
@@ -248,11 +248,19 @@ the default on versions prior to that.
       <li>
         <span class="param">sql</span>
         <span class="param-flags">required</span>
-        The SQL statements executed to create and configure the role. Must be
-        a semicolon-separated string, a base64-encoded semicolon-separated
+        The SQL statements executed to create and configure a user. Must be a
+        semicolon-separated string, a base64-encoded semicolon-separated
         string, a serialized JSON string array, or a base64-encoded serialized
         JSON string array.  The '{{name}}' and '{{password}}' values will be
         substituted.
+      </li>
+      <li>
+        <span class="param">revocation_sql</span>
+        <span class="param-flags">optional</span>
+        The SQL statements executed to revoke a user. Must be a
+        semicolon-separated string, a base64-encoded semicolon-separated
+        string, a serialized JSON string array, or a base64-encoded serialized
+        JSON string array. The '{{name}}' value will be substituted.
       </li>
       <li>
         <span class="param">rolename_length</span>
@@ -327,10 +335,10 @@ the default on versions prior to that.
   </dd>
 
   <dt>Method</dt>
-  <dd>GET</dd>
+  <dd>LIST/GET</dd>
 
   <dt>URL</dt>
-  <dd>`/roles/?list=true`</dd>
+  <dd>`/mysql/roles` (LIST) or `/mysql/roles/?list=true` (GET)</dd>
 
   <dt>Parameters</dt>
   <dd>
@@ -346,7 +354,7 @@ the default on versions prior to that.
     "data": {
       "keys": ["dev", "prod"]
     },
-    "lease_duration": 2592000,
+    "lease_duration": 2764800,
     "lease_id": "",
     "renewable": false
   }

@@ -70,7 +70,8 @@ func main() {
 	//       desired set this explicitly so that the current hostname will not be used.
 	cmc.CheckManager.Check.InstanceID = ""
 	// Search tag - a specific tag which, when coupled with the instanceId serves to identify the
-	// origin and/or grouping of the metrics
+	// origin and/or grouping of the metrics. Multiple tags may be used, separate with comma.
+    // (e.g. service:consul,service_role:server)
 	// default: service:application name (e.g. service:consul)
 	cmc.CheckManager.Check.SearchTag = ""
 	// Check secret, default: generated when a check needs to be created
@@ -163,7 +164,7 @@ import (
 func main() {
     cmc := &cgm.Config{}
     cmc.CheckManager.API.TokenKey = os.Getenv("CIRCONUS_API_TOKEN")
-  
+
     metrics, err := cgm.NewCirconusMetrics(cmc)
     if err != nil {
         panic(err)
@@ -177,3 +178,5 @@ func main() {
 }
 
 ```
+
+Unless otherwise noted, the source files are distributed under the BSD-style license found in the LICENSE file.

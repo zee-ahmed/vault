@@ -19,9 +19,10 @@
   "ha_backend":{
     "consul":{
       "bar":"baz",
-      "disable_clustering": "false"
+      "disable_clustering": "true"
     }
   },
+  "cache_size": 45678,
   "telemetry":{
     "statsd_address":"bar",
     "statsite_address":"foo",

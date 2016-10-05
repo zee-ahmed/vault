@@ -1143,6 +1143,10 @@ func marshalList(info TypeInfo, value interface{}) ([]byte, error) {
 		return nil, marshalErrorf("marshal: can not marshal non collection type into list")
 	}
 
+	if value == nil {
+		return nil, nil
+	}
+
 	rv := reflect.ValueOf(value)
 	t := rv.Type()
 	k := t.Kind()
@@ -1651,6 +1655,9 @@ func unmarshalUDT(info TypeInfo, data []byte, value interface{}) error {
 		udt := info.(UDTTypeInfo)
 
 		for _, e := range udt.Elements {
+			if len(data) == 0 {
+				return nil
+			}
 			size := readInt(data[:4])
 			data = data[4:]
 
@@ -1689,6 +1696,9 @@ func unmarshalUDT(info TypeInfo, data []byte, value interface{}) error {
 		m := *v
 
 		for _, e := range udt.Elements {
+			if len(data) == 0 {
+				return nil
+			}
 			size := readInt(data[:4])
 			data = data[4:]
 

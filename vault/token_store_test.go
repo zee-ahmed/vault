@@ -1,21 +1,189 @@
 package vault
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/logical"
 )
+
+type TokenEntryOld struct {
+	ID             string
+	Accessor       string
+	Parent         string
+	Policies       []string
+	Path           string
+	Meta           map[string]string
+	DisplayName    string
+	NumUses        int
+	CreationTime   int64
+	TTL            time.Duration
+	ExplicitMaxTTL time.Duration
+	Role           string
+	Period         time.Duration
+}
+
+func TestTokenStore_TokenEntryUpgrade(t *testing.T) {
+	var err error
+	_, ts, _, _ := TestCoreWithTokenStore(t)
+
+	// Use a struct that does not have struct tags to store the items and
+	// check if the lookup code handles them properly while reading back
+	entry := &TokenEntryOld{
+		DisplayName:    "test-display-name",
+		Path:           "test",
+		Policies:       []string{"dev", "ops"},
+		CreationTime:   time.Now().Unix(),
+		ExplicitMaxTTL: 100,
+		NumUses:        10,
+	}
+	entry.ID, err = uuid.GenerateUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enc, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saltedId := ts.SaltID(entry.ID)
+	path := lookupPrefix + saltedId
+	le := &logical.StorageEntry{
+		Key:   path,
+		Value: enc,
+	}
+
+	if err := ts.view.Put(le); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := ts.Lookup(entry.ID)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if out.DisplayName != "test-display-name" {
+		t.Fatalf("bad: display_name: expected: test-display-name, actual: %s", out.DisplayName)
+	}
+	if out.CreationTime == 0 {
+		t.Fatal("bad: expected a non-zero creation time")
+	}
+	if out.ExplicitMaxTTL != 100 {
+		t.Fatalf("bad: explicit_max_ttl: expected: 100, actual: %d", out.ExplicitMaxTTL)
+	}
+	if out.NumUses != 10 {
+		t.Fatalf("bad: num_uses: expected: 10, actual: %d", out.NumUses)
+	}
+
+	// Test the default case to ensure there are no regressions
+	ent := &TokenEntry{
+		DisplayName:    "test-display-name",
+		Path:           "test",
+		Policies:       []string{"dev", "ops"},
+		CreationTime:   time.Now().Unix(),
+		ExplicitMaxTTL: 100,
+		NumUses:        10,
+	}
+	if err := ts.create(ent); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	out, err = ts.Lookup(ent.ID)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if out.DisplayName != "test-display-name" {
+		t.Fatalf("bad: display_name: expected: test-display-name, actual: %s", out.DisplayName)
+	}
+	if out.CreationTime == 0 {
+		t.Fatal("bad: expected a non-zero creation time")
+	}
+	if out.ExplicitMaxTTL != 100 {
+		t.Fatalf("bad: explicit_max_ttl: expected: 100, actual: %d", out.ExplicitMaxTTL)
+	}
+	if out.NumUses != 10 {
+		t.Fatalf("bad: num_uses: expected: 10, actual: %d", out.NumUses)
+	}
+
+	// Fill in the deprecated fields and read out from proper fields
+	ent = &TokenEntry{
+		Path:                     "test",
+		Policies:                 []string{"dev", "ops"},
+		DisplayNameDeprecated:    "test-display-name",
+		CreationTimeDeprecated:   time.Now().Unix(),
+		ExplicitMaxTTLDeprecated: 100,
+		NumUsesDeprecated:        10,
+	}
+	if err := ts.create(ent); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	out, err = ts.Lookup(ent.ID)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if out.DisplayName != "test-display-name" {
+		t.Fatalf("bad: display_name: expected: test-display-name, actual: %s", out.DisplayName)
+	}
+	if out.CreationTime == 0 {
+		t.Fatal("bad: expected a non-zero creation time")
+	}
+	if out.ExplicitMaxTTL != 100 {
+		t.Fatalf("bad: explicit_max_ttl: expected: 100, actual: %d", out.ExplicitMaxTTL)
+	}
+	if out.NumUses != 10 {
+		t.Fatalf("bad: num_uses: expected: 10, actual: %d", out.NumUses)
+	}
+
+	// Check if NumUses picks up a lower value
+	ent = &TokenEntry{
+		Path:              "test",
+		NumUses:           5,
+		NumUsesDeprecated: 10,
+	}
+	if err := ts.create(ent); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	out, err = ts.Lookup(ent.ID)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if out.NumUses != 5 {
+		t.Fatalf("bad: num_uses: expected: 5, actual: %d", out.NumUses)
+	}
+
+	// Switch the values from deprecated and proper field and check if the
+	// lower value is still getting picked up
+	ent = &TokenEntry{
+		Path:              "test",
+		NumUses:           10,
+		NumUsesDeprecated: 5,
+	}
+	if err := ts.create(ent); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	out, err = ts.Lookup(ent.ID)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if out.NumUses != 5 {
+		t.Fatalf("bad: num_uses: expected: 5, actual: %d", out.NumUses)
+	}
+}
 
 func getBackendConfig(c *Core) *logical.BackendConfig {
 	return &logical.BackendConfig{
 		Logger: c.logger,
 		System: logical.StaticSystemView{
 			DefaultLeaseTTLVal: time.Hour * 24,
-			MaxLeaseTTLVal:     time.Hour * 24 * 30,
+			MaxLeaseTTLVal:     time.Hour * 24 * 32,
 		},
 	}
 }
@@ -92,7 +260,10 @@ func TestTokenStore_HandleRequest_LookupAccessor(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
-	req := logical.TestRequest(t, logical.UpdateOperation, "lookup-accessor/"+out.Accessor)
+	req := logical.TestRequest(t, logical.UpdateOperation, "lookup-accessor")
+	req.Data = map[string]interface{}{
+		"accessor": out.Accessor,
+	}
 
 	resp, err := ts.HandleRequest(req)
 	if err != nil {
@@ -200,7 +371,10 @@ func TestTokenStore_HandleRequest_RevokeAccessor(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 
-	req := logical.TestRequest(t, logical.UpdateOperation, "revoke-accessor/"+out.Accessor)
+	req := logical.TestRequest(t, logical.UpdateOperation, "revoke-accessor")
+	req.Data = map[string]interface{}{
+		"accessor": out.Accessor,
+	}
 
 	_, err = ts.HandleRequest(req)
 	if err != nil {
@@ -592,7 +766,7 @@ func TestTokenStore_HandleRequest_NonAssignable(t *testing.T) {
 		t.Fatalf("err: %v %v", err, resp)
 	}
 
-	req.Data["policies"] = []string{"default", "foo", cubbyholeResponseWrappingPolicyName}
+	req.Data["policies"] = []string{"default", "foo", responseWrappingPolicyName}
 
 	resp, err = ts.HandleRequest(req)
 	if err != nil {
@@ -1050,7 +1224,10 @@ func TestTokenStore_HandleRequest_Revoke(t *testing.T) {
 	testMakeToken(t, ts, root, "child", "", []string{"root", "foo"})
 	testMakeToken(t, ts, "child", "sub-child", "", []string{"foo"})
 
-	req := logical.TestRequest(t, logical.UpdateOperation, "revoke/child")
+	req := logical.TestRequest(t, logical.UpdateOperation, "revoke")
+	req.Data = map[string]interface{}{
+		"token": "child",
+	}
 	resp, err := ts.HandleRequest(req)
 	if err != nil {
 		t.Fatalf("err: %v %v", err, resp)
@@ -1082,7 +1259,10 @@ func TestTokenStore_HandleRequest_RevokeOrphan(t *testing.T) {
 	testMakeToken(t, ts, root, "child", "", []string{"root", "foo"})
 	testMakeToken(t, ts, "child", "sub-child", "", []string{"foo"})
 
-	req := logical.TestRequest(t, logical.UpdateOperation, "revoke-orphan/child")
+	req := logical.TestRequest(t, logical.UpdateOperation, "revoke-orphan")
+	req.Data = map[string]interface{}{
+		"token": "child",
+	}
 	req.ClientToken = root
 	resp, err := ts.HandleRequest(req)
 	if err != nil {
@@ -1122,7 +1302,10 @@ func TestTokenStore_HandleRequest_RevokeOrphan_NonRoot(t *testing.T) {
 		t.Fatalf("bad: %v", out)
 	}
 
-	req := logical.TestRequest(t, logical.UpdateOperation, "revoke-orphan/child")
+	req := logical.TestRequest(t, logical.UpdateOperation, "revoke-orphan")
+	req.Data = map[string]interface{}{
+		"token": "child",
+	}
 	req.ClientToken = "child"
 	resp, err := ts.HandleRequest(req)
 	if err != logical.ErrInvalidRequest {
@@ -1141,7 +1324,10 @@ func TestTokenStore_HandleRequest_RevokeOrphan_NonRoot(t *testing.T) {
 
 func TestTokenStore_HandleRequest_Lookup(t *testing.T) {
 	c, ts, _, root := TestCoreWithTokenStore(t)
-	req := logical.TestRequest(t, logical.ReadOperation, "lookup/"+root)
+	req := logical.TestRequest(t, logical.UpdateOperation, "lookup")
+	req.Data = map[string]interface{}{
+		"token": root,
+	}
 	resp, err := ts.HandleRequest(req)
 	if err != nil {
 		t.Fatalf("err: %v %v", err, resp)
@@ -1176,7 +1362,10 @@ func TestTokenStore_HandleRequest_Lookup(t *testing.T) {
 	testCoreMakeToken(t, c, root, "client", "3600s", []string{"foo"})
 
 	// Test via GET
-	req = logical.TestRequest(t, logical.ReadOperation, "lookup/client")
+	req = logical.TestRequest(t, logical.UpdateOperation, "lookup")
+	req.Data = map[string]interface{}{
+		"token": "client",
+	}
 	resp, err = ts.HandleRequest(req)
 	if err != nil {
 		t.Fatalf("err: %v %v", err, resp)
@@ -1257,7 +1446,10 @@ func TestTokenStore_HandleRequest_Lookup(t *testing.T) {
 	}
 
 	// Test last_renewal_time functionality
-	req = logical.TestRequest(t, logical.UpdateOperation, "renew/client")
+	req = logical.TestRequest(t, logical.UpdateOperation, "renew")
+	req.Data = map[string]interface{}{
+		"token": "client",
+	}
 	resp, err = ts.HandleRequest(req)
 	if err != nil {
 		t.Fatalf("err: %v %v", err, resp)
@@ -1266,7 +1458,10 @@ func TestTokenStore_HandleRequest_Lookup(t *testing.T) {
 		t.Fatalf("bad: %#v", resp)
 	}
 
-	req = logical.TestRequest(t, logical.ReadOperation, "lookup/client")
+	req = logical.TestRequest(t, logical.UpdateOperation, "lookup")
+	req.Data = map[string]interface{}{
+		"token": "client",
+	}
 	resp, err = ts.HandleRequest(req)
 	if err != nil {
 		t.Fatalf("err: %v %v", err, resp)
@@ -1343,7 +1538,12 @@ func TestTokenStore_HandleRequest_Renew(t *testing.T) {
 	originalExpire := auth.ExpirationTime()
 
 	beforeRenew := time.Now()
-	req := logical.TestRequest(t, logical.UpdateOperation, "renew/"+root.ID)
+	req := logical.TestRequest(t, logical.UpdateOperation, "renew")
+	req.Data = map[string]interface{}{
+		"token":     root.ID,
+		"increment": "3600s",
+	}
+
 	req.Data["increment"] = "3600s"
 	resp, err := ts.HandleRequest(req)
 	if err != nil {

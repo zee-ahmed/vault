@@ -17,15 +17,13 @@ import (
 	"github.com/hashicorp/hcl/hcl/ast"
 )
 
-// ReloadFunc are functions that are called when a reload is requested.
-type ReloadFunc func(map[string]string) error
-
 // Config is the configuration for the vault server.
 type Config struct {
 	Listeners []*Listener `hcl:"-"`
 	Backend   *Backend    `hcl:"-"`
 	HABackend *Backend    `hcl:"-"`
 
+	CacheSize    int  `hcl:"cache_size"`
 	DisableCache bool `hcl:"disable_cache"`
 	DisableMlock bool `hcl:"disable_mlock"`
 
@@ -61,8 +59,8 @@ func DevConfig(ha bool) *Config {
 
 		Telemetry: &Telemetry{},
 
-		MaxLeaseTTL:     30 * 24 * time.Hour,
-		DefaultLeaseTTL: 30 * 24 * time.Hour,
+		MaxLeaseTTL:     32 * 24 * time.Hour,
+		DefaultLeaseTTL: 32 * 24 * time.Hour,
 	}
 
 	if ha {
@@ -200,6 +198,11 @@ func (c *Config) Merge(c2 *Config) *Config {
 		result.Telemetry = c2.Telemetry
 	}
 
+	result.CacheSize = c.CacheSize
+	if c2.CacheSize != 0 {
+		result.CacheSize = c2.CacheSize
+	}
+
 	// merging these booleans via an OR operation
 	result.DisableCache = c.DisableCache
 	if c2.DisableCache {
@@ -289,6 +292,7 @@ func ParseConfig(d string, logger log.Logger) (*Config, error) {
 		"backend",
 		"ha_backend",
 		"listener",
+		"cache_size",
 		"disable_cache",
 		"disable_mlock",
 		"telemetry",
@@ -439,8 +443,7 @@ func parseBackends(result *Config, list *ast.ObjectList) error {
 		delete(m, "cluster_addr")
 	}
 
-	//TODO: Change this in the future
-	disableClustering := true
+	var disableClustering bool
 	var err error
 	if v, ok := m["disable_clustering"]; ok {
 		disableClustering, err = strconv.ParseBool(v)
@@ -495,8 +498,7 @@ func parseHABackends(result *Config, list *ast.ObjectList) error {
 		delete(m, "cluster_addr")
 	}
 
-	//TODO: Change this in the future
-	disableClustering := true
+	var disableClustering bool
 	var err error
 	if v, ok := m["disable_clustering"]; ok {
 		disableClustering, err = strconv.ParseBool(v)

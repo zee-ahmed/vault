@@ -234,7 +234,7 @@ func (h *HostInfo) update(from *HostInfo) {
 }
 
 func (h *HostInfo) IsUp() bool {
-	return h.State() == NodeUp
+	return h != nil && h.State() == NodeUp
 }
 
 func (h *HostInfo) String() string {
@@ -262,6 +262,22 @@ func checkSystemLocal(control *controlConn) (bool, error) {
 	if err := iter.err; err != nil {
 		if errf, ok := err.(*errorFrame); ok {
 			if errf.code == errSyntax {
+				return false, nil
+			}
+		}
+
+		return false, err
+	}
+
+	return true, nil
+}
+
+// Returns true if we are using system_schema.keyspaces instead of system.schema_keyspaces
+func checkSystemSchema(control *controlConn) (bool, error) {
+	iter := control.query("SELECT * FROM system_schema.keyspaces")
+	if err := iter.err; err != nil {
+		if errf, ok := err.(*errorFrame); ok {
+			if errf.code == errReadFailure {
 				return false, nil
 			}
 		}
@@ -323,30 +339,25 @@ func (r *ringDescriber) GetHosts() (hosts []*HostInfo, partitioner string, err e
 
 	hosts = []*HostInfo{localHost}
 
-	iter := r.session.control.query("SELECT rpc_address, data_center, rack, host_id, tokens, release_version FROM system.peers")
-	if iter == nil {
+	rows := r.session.control.query("SELECT rpc_address, data_center, rack, host_id, tokens, release_version FROM system.peers").Scanner()
+	if rows == nil {
 		return r.prevHosts, r.prevPartitioner, nil
 	}
 
-	var (
-		host         = &HostInfo{port: r.session.cfg.Port}
-		versionBytes []byte
-	)
-	for iter.Scan(&host.peer, &host.dataCenter, &host.rack, &host.hostId, &host.tokens, &versionBytes) {
-		if err = host.version.unmarshal(versionBytes); err != nil {
-			log.Printf("invalid peer entry: peer=%s host_id=%s tokens=%v version=%s\n", host.peer, host.hostId, host.tokens, versionBytes)
+	for rows.Next() {
+		host := &HostInfo{port: r.session.cfg.Port}
+		err := rows.Scan(&host.peer, &host.dataCenter, &host.rack, &host.hostId, &host.tokens, &host.version)
+		if err != nil {
+			log.Println(err)
 			continue
 		}
 
 		if r.matchFilter(host) {
 			hosts = append(hosts, host)
 		}
-		host = &HostInfo{
-			port: r.session.cfg.Port,
-		}
 	}
 
-	if err = iter.Close(); err != nil {
+	if err = rows.Err(); err != nil {
 		return nil, "", err
 	}
 

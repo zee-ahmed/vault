@@ -81,7 +81,7 @@ func (c *Core) enableCredential(entry *MountEntry) error {
 	}
 
 	// Update the auth table
-	newTable := c.auth.ShallowClone()
+	newTable := c.auth.shallowClone()
 	newTable.Entries = append(newTable.Entries, entry)
 	if err := c.persistAuth(newTable); err != nil {
 		return errors.New("failed to update auth table")
@@ -100,8 +100,9 @@ func (c *Core) enableCredential(entry *MountEntry) error {
 	return nil
 }
 
-// disableCredential is used to disable an existing credential backend
-func (c *Core) disableCredential(path string) error {
+// disableCredential is used to disable an existing credential backend; the
+// boolean indicates if it existed
+func (c *Core) disableCredential(path string) (bool, error) {
 	// Ensure we end the path in a slash
 	if !strings.HasSuffix(path, "/") {
 		path += "/"
@@ -109,14 +110,14 @@ func (c *Core) disableCredential(path string) error {
 
 	// Ensure the token backend is not affected
 	if path == "token/" {
-		return fmt.Errorf("token credential backend cannot be disabled")
+		return true, fmt.Errorf("token credential backend cannot be disabled")
 	}
 
 	// Store the view for this backend
 	fullPath := credentialRoutePrefix + path
 	view := c.router.MatchingStorageView(fullPath)
 	if view == nil {
-		return fmt.Errorf("no matching backend")
+		return false, fmt.Errorf("no matching backend")
 	}
 
 	c.authLock.Lock()
@@ -124,46 +125,46 @@ func (c *Core) disableCredential(path string) error {
 
 	// Mark the entry as tainted
 	if err := c.taintCredEntry(path); err != nil {
-		return err
+		return true, err
 	}
 
 	// Taint the router path to prevent routing
 	if err := c.router.Taint(fullPath); err != nil {
-		return err
+		return true, err
 	}
 
 	// Revoke credentials from this path
 	if err := c.expiration.RevokePrefix(fullPath); err != nil {
-		return err
+		return true, err
 	}
 
 	// Unmount the backend
 	if err := c.router.Unmount(fullPath); err != nil {
-		return err
+		return true, err
 	}
 
 	// Clear the data in the view
 	if view != nil {
 		if err := ClearView(view); err != nil {
-			return err
+			return true, err
 		}
 	}
 
 	// Remove the mount table entry
 	if err := c.removeCredEntry(path); err != nil {
-		return err
+		return true, err
 	}
 	if c.logger.IsInfo() {
 		c.logger.Info("core: disabled credential backend", "path", path)
 	}
-	return nil
+	return true, nil
 }
 
 // removeCredEntry is used to remove an entry in the auth table
 func (c *Core) removeCredEntry(path string) error {
 	// Taint the entry from the auth table
-	newTable := c.auth.ShallowClone()
-	newTable.Remove(path)
+	newTable := c.auth.shallowClone()
+	newTable.remove(path)
 
 	// Update the auth table
 	if err := c.persistAuth(newTable); err != nil {
@@ -180,7 +181,7 @@ func (c *Core) taintCredEntry(path string) error {
 	// Taint the entry from the auth table
 	// We do this on the original since setting the taint operates
 	// on the entries which a shallow clone shares anyways
-	found := c.auth.SetTaint(path, true)
+	found := c.auth.setTaint(path, true)
 
 	// Ensure there was a match
 	if !found {
@@ -228,13 +229,6 @@ func (c *Core) loadCredentials() error {
 
 		// Upgrade to table-scoped entries
 		for _, entry := range c.auth.Entries {
-			// The auth backend "aws-ec2" was named "aws" in the master.
-			// This is to support upgrade procedure from "aws" to "aws-ec2".
-			if entry.Type == "aws" {
-				entry.Type = "aws-ec2"
-				needPersist = true
-			}
-
 			if entry.Table == "" {
 				entry.Table = c.auth.Type
 				needPersist = true

@@ -89,6 +89,9 @@ var (
 	manualStepDownSleepPeriod = 10 * time.Second
 )
 
+// ReloadFunc are functions that are called when a reload is requested.
+type ReloadFunc func(map[string]string) error
+
 // NonFatalError is an error that can be returned during NewCore that should be
 // displayed but not cause a program exit
 type NonFatalError struct {
@@ -103,8 +106,9 @@ func (e *NonFatalError) Error() string {
 	return e.Err.Error()
 }
 
-// ErrInvalidKey is returned if there is an error with a
-// provided unseal key.
+// ErrInvalidKey is returned if there is a user-based error with a provided
+// unseal key. This will be shown to the user, so should not contain
+// information that is sensitive.
 type ErrInvalidKey struct {
 	Reason string
 }
@@ -241,6 +245,12 @@ type Core struct {
 	// cachingDisabled indicates whether caches are disabled
 	cachingDisabled bool
 
+	// reloadFuncs is a map containing reload functions
+	reloadFuncs map[string][]ReloadFunc
+
+	// reloadFuncsLock controlls access to the funcs
+	reloadFuncsLock sync.RWMutex
+
 	//
 	// Cluster information
 	//
@@ -307,7 +317,7 @@ type CoreConfig struct {
 	// Disables mlock syscall
 	DisableMlock bool `json:"disable_mlock" structs:"disable_mlock" mapstructure:"disable_mlock"`
 
-	// Custom cache size of zero for default
+	// Custom cache size for the LRU cache on the physical backend, or zero for default
 	CacheSize int `json:"cache_size" structs:"cache_size" mapstructure:"cache_size"`
 
 	// Set as the leader address for HA
@@ -321,6 +331,9 @@ type CoreConfig struct {
 	MaxLeaseTTL time.Duration `json:"max_lease_ttl" structs:"max_lease_ttl" mapstructure:"max_lease_ttl"`
 
 	ClusterName string `json:"cluster_name" structs:"cluster_name" mapstructure:"cluster_name"`
+
+	ReloadFuncs     *map[string][]ReloadFunc
+	ReloadFuncsLock *sync.RWMutex
 }
 
 // NewCore is used to construct a new core
@@ -353,12 +366,17 @@ func NewCore(conf *CoreConfig) (*Core, error) {
 		}
 	}
 
+	// Make a default logger if not provided
+	if conf.Logger == nil {
+		conf.Logger = logformat.NewVaultLogger(log.LevelTrace)
+	}
+
 	// Wrap the backend in a cache unless disabled
 	if !conf.DisableCache {
 		_, isCache := conf.Physical.(*physical.Cache)
 		_, isInmem := conf.Physical.(*physical.InmemBackend)
 		if !isCache && !isInmem {
-			cache := physical.NewCache(conf.Physical, conf.CacheSize)
+			cache := physical.NewCache(conf.Physical, conf.CacheSize, conf.Logger)
 			conf.Physical = cache
 		}
 	}
@@ -385,11 +403,6 @@ func NewCore(conf *CoreConfig) (*Core, error) {
 		return nil, fmt.Errorf("barrier setup failed: %v", err)
 	}
 
-	// Make a default logger if not provided
-	if conf.Logger == nil {
-		conf.Logger = logformat.NewVaultLogger(log.LevelTrace)
-	}
-
 	// Setup the core
 	c := &Core{
 		redirectAddr:                     conf.RedirectAddr,
@@ -414,6 +427,14 @@ func NewCore(conf *CoreConfig) (*Core, error) {
 		c.ha = conf.HAPhysical
 	}
 
+	// We create the funcs here, then populate the given config with it so that
+	// the caller can share state
+	conf.ReloadFuncsLock = &c.reloadFuncsLock
+	c.reloadFuncsLock.Lock()
+	c.reloadFuncs = make(map[string][]ReloadFunc)
+	c.reloadFuncsLock.Unlock()
+	conf.ReloadFuncs = &c.reloadFuncs
+
 	// Setup the backends
 	logicalBackends := make(map[string]logical.Factory)
 	for k, f := range conf.LogicalBackends {
@@ -425,7 +446,7 @@ func NewCore(conf *CoreConfig) (*Core, error) {
 	}
 	logicalBackends["cubbyhole"] = CubbyholeBackendFactory
 	logicalBackends["system"] = func(config *logical.BackendConfig) (logical.Backend, error) {
-		return NewSystemBackend(c, config), nil
+		return NewSystemBackend(c, config)
 	}
 	c.logicalBackends = logicalBackends
 
@@ -1514,4 +1535,28 @@ func (c *Core) BarrierKeyLength() (min, max int) {
 	min, max = c.barrier.KeyLength()
 	max += shamir.ShareOverhead
 	return
+}
+
+func (c *Core) ValidateWrappingToken(token string) (bool, error) {
+	if token == "" {
+		return false, fmt.Errorf("token is empty")
+	}
+
+	te, err := c.tokenStore.Lookup(token)
+	if err != nil {
+		return false, err
+	}
+	if te == nil {
+		return false, nil
+	}
+
+	if len(te.Policies) != 1 {
+		return false, nil
+	}
+
+	if te.Policies[0] != responseWrappingPolicyName {
+		return false, nil
+	}
+
+	return true, nil
 }

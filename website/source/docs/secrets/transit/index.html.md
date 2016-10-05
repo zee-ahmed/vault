@@ -10,19 +10,20 @@ description: |-
 
 Name: `transit`
 
-The transit secret backend is used to encrypt/decrypt data in-transit. Vault
-doesn't store the data sent to the backend. It can also be viewed as "encryption
-as a service."
+The transit secret backend handles cryptographic functions on data in-transit.
+Vault doesn't store the data sent to the backend. It can also be viewed as
+"cryptography as a service."
 
-The primary use case for the transit backend is to encrypt data from
-applications while still storing that encrypted data in some primary data
-store. This relieves the burden of proper encryption/decryption from
-application developers and pushes the burden onto the operators of Vault.
-Operators of Vault generally include the security team at an organization,
-which means they can ensure that data is encrypted/decrypted properly.
+The primary use case for `transit` is to encrypt data from applications while
+still storing that encrypted data in some primary data store. This relieves the
+burden of proper encryption/decryption from application developers and pushes
+the burden onto the operators of Vault.  Operators of Vault generally include
+the security team at an organization, which means they can ensure that data is
+encrypted/decrypted properly. Additionally, since encrypt/decrypt operations
+must enter the audit log, any decryption event is recorded.
 
-Additionally, since encrypt/decrypt operations must enter the audit log,
-any decryption event is recorded.
+`transit` can also sign and verify data; generate hashes and HMACs of data; and
+act as a source of random bytes.
 
 Due to Vault's flexible ACLs, other interesting use-cases are possible. For
 instance, one set of Internet-facing servers can be given permission to encrypt
@@ -85,7 +86,7 @@ the settings of the "foo" key by reading it:
 ```
 $ vault read transit/keys/foo
 Key                     Value
-cipher_mode             aes-gcm
+type                    aes256-gcm96
 deletion_allowed        false
 derived                 false
 keys                    map[1:1.459861712e+09]
@@ -131,8 +132,8 @@ only encrypt or decrypt using the named keys they need access to.
 <dl class="api">
   <dt>Description</dt>
   <dd>
-    Creates a new named encryption key. The values set here cannot be changed
-    after key creation.
+    Creates a new named encryption key of the specified type. The values set
+    here cannot be changed after key creation.
   </dd>
 
   <dt>Method</dt>
@@ -144,6 +145,16 @@ only encrypt or decrypt using the named keys they need access to.
   <dt>Parameters</dt>
   <dd>
     <ul>
+      <li>
+        <span class="param">type</span>
+        <span class="param-flags">required</span>
+        The type of key to create. The currently-supported types are:
+        <ul>
+          <li>`aes256-gcm96`: AES-256 wrapped with GCM using a 12-byte nonce size (symmetric)</li>
+          <li>`ecdsa-p256`: ECDSA using the P-256 elliptic curve (asymmetric)</li>
+        </ul>
+        Defaults to `aes256-gcm`.
+      </li>
       <li>
         <span class="param">derived</span>
         <span class="param-flags">optional</span>
@@ -157,15 +168,12 @@ only encrypt or decrypt using the named keys they need access to.
         If set, the key will support convergent encryption, where the same
         plaintext creates the same ciphertext. This requires _derived_ to be
         set to `true`. When enabled, each
-        encryption(/decryption/rewrap/datakey) operation will require a `nonce`
-        value to be specified. Note that while this is useful for particular
-        situations, all nonce values used with a given context value **must be
-        unique** or it will compromise the security of your key. A common way
-        to use this will be to generate a unique identifier for the given data
-        (for instance, a SHA-512 sum), then separate the bytes so that twelve
-        bytes are used as the nonce and the remaining as the context, ensuring
-        that all bits of unique identity are used as a part of the encryption
-        operation. Defaults to false.
+        encryption(/decryption/rewrap/datakey) operation will derive a `nonce`
+        value rather than randomly generate it. Note that while this is useful
+        for particular situations, all nonce values used with a given context
+        value **must be unique** or it will compromise the security of your
+        key, and the key space for nonces is 96 bit -- not as large as the AES
+        key itself. Defaults to false.
       </li>
     </ul>
   </dd>
@@ -183,7 +191,9 @@ only encrypt or decrypt using the named keys they need access to.
   <dd>
     Returns information about a named encryption key. The `keys` object shows
     the creation time of each key version; the values are not the keys
-    themselves.
+    themselves. Depending on the type of key, different information may be
+    returned, e.g. an asymmetric key will return its public key in a standard
+    format for the type.
   </dd>
 
   <dt>Method</dt>
@@ -203,7 +213,7 @@ only encrypt or decrypt using the named keys they need access to.
     ```javascript
     {
       "data": {
-        "cipher_mode": "aes-gcm",
+        "type": "aes256-gcm96",
         "deletion_allowed": false,
         "derived": false,
         "keys": {
@@ -271,10 +281,13 @@ only encrypt or decrypt using the named keys they need access to.
         The minimum version of ciphertext allowed to be decrypted. Adjusting
         this as part of a key rotation policy can prevent old copies of
         ciphertext from being decrypted, should they fall into the wrong hands.
+        For signatures, this value controls the minimum version of signature
+        that can be verified against. For HMACs, this controls the minimum
+        version of a key allowed to be used as the key for the HMAC function.
         Defaults to 0.
       </li>
       <li>
-        <span class="param">deletion_allowed</span>
+        <span class="param">allow_deletion</span>
         <span class="param-flags">optional</span>
         When set, the key is allowed to be deleted. Defaults to false.
       </li>
@@ -296,7 +309,8 @@ only encrypt or decrypt using the named keys they need access to.
     Rotates the version of the named key. After rotation, new plaintext
     requests will be encrypted with the new version of the key. To upgrade
     ciphertext to be encrypted with the latest version of the key, use the
-    `rewrap` endpoint.
+    `rewrap` endpoint. This is only supported with keys that support encryption
+    and decryption operations.
   </dd>
 
   <dt>Method</dt>
@@ -322,13 +336,13 @@ only encrypt or decrypt using the named keys they need access to.
 <dl class="api">
   <dt>Description</dt>
   <dd>
-    Encrypts the provided plaintext using the named key. This path supports the
-    `create` and `update` policy capabilities as follows: if the user has the
-    `create` capability for this endpoint in their policies, and the key does
-    not exist, it will be upserted with default values (whether the key
-    requires derivation depends on whether the context parameter is empty or
-    not). If the user only has `update` capability and the key does not exist,
-    an error will be returned.
+    Encrypts the provided plaintext using the named key. Currently, this only
+    supports symmetric keys. This path supports the `create` and `update`
+    policy capabilities as follows: if the user has the `create` capability for
+    this endpoint in their policies, and the key does not exist, it will be
+    upserted with default values (whether the key requires derivation depends
+    on whether the context parameter is empty or not). If the user only has
+    `update` capability and the key does not exist, an error will be returned.
   </dd>
 
   <dt>Method</dt>
@@ -343,22 +357,23 @@ only encrypt or decrypt using the named keys they need access to.
       <li>
         <span class="param">plaintext</span>
         <span class="param-flags">required</span>
-        The plaintext to encrypt, provided as base64 encoded.
+        The plaintext to encrypt, provided as a base64-encoded string.
       </li>
       <li>
         <span class="param">context</span>
         <span class="param-flags">optional</span>
-        The key derivation context, provided as base64 encoded.
+        The key derivation context, provided as a base64-encoded string.
         Must be provided if derivation is enabled.
       </li>
       <li>
         <span class="param">nonce</span>
         <span class="param-flags">optional</span>
         The nonce value, provided as base64 encoded. Must be provided if
-        convergent encryption is enabled for this key. The value must be
-        exactly 96 bits (12 bytes) long and the user must ensure that for any
-        given context (and thus, any given encryption key) this nonce value is
-        **never reused**.
+        convergent encryption is enabled for this key and the key was generated
+        with Vault 0.6.1. Not required for keys created in 0.6.2+. The value
+        must be exactly 96 bits (12 bytes) long and the user must ensure that
+        for any given context (and thus, any given encryption key) this nonce
+        value is **never reused**.
       </li>
     </ul>
   </dd>
@@ -383,7 +398,8 @@ only encrypt or decrypt using the named keys they need access to.
 <dl class="api">
   <dt>Description</dt>
   <dd>
-    Decrypts the provided ciphertext using the named key.
+    Decrypts the provided ciphertext using the named key. Currently, this only
+    supports symmetric keys.
   </dd>
 
   <dt>Method</dt>
@@ -403,14 +419,16 @@ only encrypt or decrypt using the named keys they need access to.
       <li>
         <span class="param">context</span>
         <span class="param-flags">optional</span>
-        The key derivation context, provided as base64 encoded.
+        The key derivation context, provided as a base64-encoded string.
         Must be provided if derivation is enabled.
       </li>
       <li>
         <span class="param">nonce</span>
         <span class="param-flags">optional</span>
         The nonce value used during encryption, provided as base64 encoded.
-        Must be provided if convergent encryption is enabled for this key.
+        Must be provided if convergent encryption is enabled for this key and
+        the key was created with Vault 0.6.1. Not required for keys created in
+        0.6.2+.
       </li>
     </ul>
   </dd>
@@ -457,14 +475,16 @@ only encrypt or decrypt using the named keys they need access to.
       <li>
         <span class="param">context</span>
         <span class="param-flags">optional</span>
-        The key derivation context, provided as base64 encoded.
+        The key derivation context, provided as base64-encoded string.
         Must be provided if derivation is enabled.
       </li>
       <li>
         <span class="param">nonce</span>
         <span class="param-flags">optional</span>
         The nonce value used during encryption, provided as base64 encoded.
-        Must be provided if convergent encryption is enabled for this key.
+        Must be provided if convergent encryption is enabled for this key and
+        the key was created with Vault 0.6.1. Not required for keys created in
+        0.6.2+.
       </li>
     </ul>
   </dd>
@@ -515,17 +535,18 @@ only encrypt or decrypt using the named keys they need access to.
       <li>
         <span class="param">context</span>
         <span class="param-flags">optional</span>
-        The key derivation context, provided as base64 encoded.
+        The key derivation context, provided as a base64-encoded string.
         Must be provided if derivation is enabled.
       </li>
       <li>
         <span class="param">nonce</span>
         <span class="param-flags">optional</span>
         The nonce value, provided as base64 encoded. Must be provided if
-        convergent encryption is enabled for this key. The value must be
-        exactly 96 bits (12 bytes) long and the user must ensure that for any
-        given context (and thus, any given encryption key) this nonce value is
-        **never reused**.
+        convergent encryption is enabled for this key and the key was generated
+        with Vault 0.6.1. Not required for keys created in 0.6.2+. The value
+        must be exactly 96 bits (12 bytes) long and the user must ensure that
+        for any given context (and thus, any given encryption key) this nonce
+        value is **never reused**.
       </li>
       <li>
         <span class="param">bits</span>
@@ -544,6 +565,291 @@ only encrypt or decrypt using the named keys they need access to.
       "data": {
         "plaintext": "dGhlIHF1aWNrIGJyb3duIGZveAo=",
         "ciphertext": "vault:v1:abcdefgh"
+      }
+    }
+    ```
+
+  </dd>
+</dl>
+
+### /transit/random
+#### POST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+    Return high-quality random bytes of the specified length.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>POST</dd>
+
+  <dt>URL</dt>
+  <dd>`/transit/random(/<bytes>)`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+    <ul>
+      <li>
+        <span class="param">bytes</span>
+        <span class="param-flags">optional</span>
+        The number of bytes to return. Defaults to 32 (256 bits). This value
+        can be specified either in the request body, or as a part of the URL
+        with a format like `/transit/random/48`.
+      </li>
+      <li>
+        <span class="param">format</span>
+        <span class="param-flags">optional</span>
+        The output encoding; can be either `hex` or `base64`. Defaults to
+        `base64`.
+      </li>
+    </ul>
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+
+    ```javascript
+    {
+      "data": {
+        "random_bytes": "dGhlIHF1aWNrIGJyb3duIGZveAo="
+      }
+    }
+    ```
+
+  </dd>
+</dl>
+
+### /transit/hash
+#### POST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+    Returns the hash of given data using the specified algorithm. The algorithm
+    can be specified as part of the URL or given via a parameter; the URL value
+    takes precedence if both are set.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>POST</dd>
+
+  <dt>URL</dt>
+  <dd>`/transit/hash(/<algorithm>)`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+    <ul>
+      <li>
+        <span class="param">input</span>
+        <span class="param-flags">required</span>
+        The base64-encoded input data.
+      </li>
+      <li>
+        <span class="param">algorithm</span>
+        <span class="param-flags">optional</span>
+        The hash algorithm to use. This can also be specified in the URL.
+        Currently-supported algorithms are:
+        <ul>
+          <li>`sha2-224`</li>
+          <li>`sha2-256`</li>
+          <li>`sha2-384`</li>
+          <li>`sha2-512`</li>
+        </ul>
+        Defaults to `sha2-256`.
+      </li>
+      <li>
+        <span class="param">format</span>
+        <span class="param-flags">optional</span>
+        The output encoding; can be either `hex` or `base64`. Defaults to
+        `hex`.
+      </li>
+    </ul>
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+
+    ```javascript
+    {
+      "data": {
+        "sum": "dGhlIHF1aWNrIGJyb3duIGZveAo="
+      }
+    }
+    ```
+
+  </dd>
+</dl>
+
+### /transit/hmac/
+#### POST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+    Returns the digest of given data using the specified hash algorithm and the
+    named key. The key can be of any type supported by `transit`; the raw key
+    will be marshalled into bytes to be used for the HMAC function. If the key
+    is of a type that supports rotation, the latest (current) version will be
+    used.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>POST</dd>
+
+  <dt>URL</dt>
+  <dd>`/transit/hmac/<name>(/<algorithm>)`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+    <ul>
+      <li>
+        <span class="param">input</span>
+        <span class="param-flags">required</span>
+        The base64-encoded input data.
+      </li>
+      <li>
+        <span class="param">algorithm</span>
+        <span class="param-flags">optional</span>
+        The hash algorithm to use. This can also be specified in the URL.
+        Currently-supported algorithms are:
+        <ul>
+          <li>`sha2-224`</li>
+          <li>`sha2-256`</li>
+          <li>`sha2-384`</li>
+          <li>`sha2-512`</li>
+        </ul>
+        Defaults to `sha2-256`.
+      </li>
+      <li>
+        <span class="param">format</span>
+        <span class="param-flags">optional</span>
+        The output encoding; can be either `hex` or `base64`. Defaults to
+        `hex`.
+      </li>
+    </ul>
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+
+    ```javascript
+    {
+      "data": {
+        "hmac": "dGhlIHF1aWNrIGJyb3duIGZveAo="
+      }
+    }
+    ```
+
+  </dd>
+</dl>
+
+### /transit/sign/
+#### POST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+    Returns the cryptographic signature of the given data using the named key
+    and the specified hash algorithm. The key must be of a type that supports
+    signing.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>POST</dd>
+
+  <dt>URL</dt>
+  <dd>`/transit/sign/<name>(/<algorithm>)`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+    <ul>
+      <li>
+        <span class="param">input</span>
+        <span class="param-flags">required</span>
+        The base64-encoded input data.
+      </li>
+      <li>
+        <span class="param">algorithm</span>
+        <span class="param-flags">optional</span>
+        The hash algorithm to use. This can also be specified in the URL.
+        Currently-supported algorithms are:
+        <ul>
+          <li>`sha2-224`</li>
+          <li>`sha2-256`</li>
+          <li>`sha2-384`</li>
+          <li>`sha2-512`</li>
+        </ul>
+        Defaults to `sha2-256`.
+      </li>
+    </ul>
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+
+    ```javascript
+    {
+      "data": {
+        "signature": "vault:v1:MEUCIQCyb869d7KWuA0hBM9b5NJrmWzMW3/pT+0XYCM9VmGR+QIgWWF6ufi4OS2xo1eS2V5IeJQfsi59qeMWtgX0LipxEHI="
+      }
+    }
+    ```
+
+  </dd>
+</dl>
+
+### /transit/verify/
+#### POST
+
+<dl class="api">
+  <dt>Description</dt>
+  <dd>
+    Returns whether the provided signature is valid for the given data.
+  </dd>
+
+  <dt>Method</dt>
+  <dd>POST</dd>
+
+  <dt>URL</dt>
+  <dd>`/transit/verify/<name>(/<algorithm>)`</dd>
+
+  <dt>Parameters</dt>
+  <dd>
+    <ul>
+      <li>
+        <span class="param">input</span>
+        <span class="param-flags">required</span>
+        The base64-encoded input data.
+      </li>
+      <li>
+        <span class="param">signature</span>
+        <span class="param-flags">required</span>
+        The signature output from the `/transit/sign` function.
+      </li>
+      <li>
+        <span class="param">algorithm</span>
+        <span class="param-flags">optional</span>
+        The hash algorithm to use. This can also be specified in the URL.
+        Currently-supported algorithms are:
+        <ul>
+          <li>`sha2-224`</li>
+          <li>`sha2-256`</li>
+          <li>`sha2-384`</li>
+          <li>`sha2-512`</li>
+        </ul>
+        Defaults to `sha2-256`.
+      </li>
+    </ul>
+  </dd>
+
+  <dt>Returns</dt>
+  <dd>
+
+    ```javascript
+    {
+      "data": {
+        "valid": true
       }
     }
     ```

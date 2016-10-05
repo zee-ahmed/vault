@@ -171,10 +171,10 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`/auth/approle/role` (LIST) or `/auth/approle/role?list=true` (GET)</dd>
+  <dd>LIST/GET</dd>
 
   <dt>URL</dt>
-  <dd>`LIST/GET`</dd>
+  <dd>`/auth/approle/role` (LIST) or `/auth/approle/role?list=true` (GET)</dd>
 
   <dt>Parameters</dt>
   <dd>
@@ -211,12 +211,14 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
 <dl class="api">
   <dt>Description</dt>
   <dd>
-  Create a new AppRole or update an existing AppRole. This endpoint
-  supports both `create` and `update` capabilities.
+  Creates a new AppRole or updates an existing AppRole. This endpoint
+  supports both `create` and `update` capabilities. There can be one or more
+  constraints enabled on the role. It is required to have at least one of them
+  enabled while creating or updating a role.
   </dd>
 
   <dt>Method</dt>
-  <dd>`POST`</dd>
+  <dd>POST</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]`</dd>
@@ -314,7 +316,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`GET`</dd>
+  <dd>GET</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]`</dd>
@@ -361,7 +363,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`DELETE`</dd>
+  <dd>DELETE</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]`</dd>
@@ -386,7 +388,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`GET`</dd>
+  <dd>GET</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]/role-id`</dd>
@@ -424,7 +426,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`POST`</dd>
+  <dd>POST</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]/role-id`</dd>
@@ -460,7 +462,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`POST`</dd>
+  <dd>POST</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]/secret-id`</dd>
@@ -475,6 +477,16 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
         string containing the metadata in key-value pairs. This metadata will
         be set on tokens issued with this SecretID, and is logged in audit logs
         _in plaintext_.
+      </li>
+    </ul>
+    <ul>
+      <li>
+        <span class="param">cidr_list</span>
+        <span class="param-flags">optional</span>
+Comma separated list of CIDR blocks enforcing secret IDs to be used from
+specific set of IP addresses. If 'bound_cidr_list' is set on the role, then the
+list of CIDR blocks listed here should be a subset of the CIDR blocks listed on
+the role.
       </li>
     </ul>
   </dd>
@@ -509,7 +521,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`LIST/GET`</dd>
+  <dd>LIST/GET</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]/secret-id` (LIST) or `/auth/approle/role/[role_name]/secret-id?list=true` (GET)</dd>
@@ -545,8 +557,8 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 </dl>
 
-### /auth/approle/role/[role_name]/secret-id/<secret_id>
-#### GET
+### /auth/approle/role/[role_name]/secret-id/lookup
+#### POST
 <dl class="api">
   <dt>Description</dt>
   <dd>
@@ -554,14 +566,20 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`GET`</dd>
+  <dd>POST</dd>
 
   <dt>URL</dt>
-  <dd>`/auth/approle/role/[role_name]/secret-id/<secret_id>`</dd>
+  <dd>`/auth/approle/role/[role_name]/secret-id/lookup`</dd>
 
   <dt>Parameters</dt>
   <dd>
-    None.
+    <ul>
+      <li>
+        <span class="param">secret_id</span>
+        <span class="param-flags">required</span>
+Secret ID attached to the role
+      </li>
+    </ul>
   </dd>
 
   <dt>Returns</dt>
@@ -569,27 +587,26 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
 
 ```javascript
 {
-  "auth": null,
-  "warnings": null,
-  "wrap_info": null,
-  "data": {
-    "secret_id_ttl": 600,
-    "secret_id_num_uses": 40,
-    "secret_id_accessor": "5e222f10-278d-a829-4e74-10d71977bb53",
-    "metadata": {},
-    "last_updated_time": "2016-06-29T05:31:09.407042587Z",
-    "expiration_time": "2016-06-29T05:41:09.407042587Z",
-    "creation_time": "2016-06-29T05:31:09.407042587Z"
-  },
-  "lease_duration": 0,
-  "renewable": false,
-  "lease_id": ""
+        "request_id": "0d25d8ec-0d16-2842-1dda-c28c25aefd4b",
+        "lease_id": "",
+        "lease_duration": 0,
+        "renewable": false,
+        "data": {
+                "cidr_list": null,
+                "creation_time": "2016-09-28T21:00:46.760570318-04:00",
+                "expiration_time": "0001-01-01T00:00:00Z",
+                "last_updated_time": "2016-09-28T21:00:46.760570318-04:00",
+                "metadata": {},
+                "secret_id_accessor": "b4bea6b2-0214-9f7f-33cf-e732155feadb",
+                "secret_id_num_uses": 10,
+                "secret_id_ttl": 0
+        },
 }
 ```
-
   </dd>
 </dl>
 
+### /auth/approle/role/[role_name]/secret-id/destroy
 #### DELETE
 <dl class="api">
   <dt>Description</dt>
@@ -598,14 +615,20 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`DELETE`</dd>
+  <dd>DELETE</dd>
 
   <dt>URL</dt>
-  <dd>`/auth/approle/role/[role_name]/secret-id/<secret_id>`</dd>
+  <dd>`/auth/approle/role/[role_name]/secret-id/destroy`</dd>
 
   <dt>Parameters</dt>
   <dd>
-    None.
+    <ul>
+      <li>
+        <span class="param">secret_id</span>
+        <span class="param-flags">required</span>
+Secret ID attached to the role
+      </li>
+    </ul>
   </dd>
 
   <dt>Returns</dt>
@@ -614,8 +637,8 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 </dl>
 
-### /auth/approle/role/[role_name]/secret-id-accessor/<secret_id_accessor>
-#### GET
+### /auth/approle/role/[role_name]/secret-id-accessor/lookup
+#### POST
 <dl class="api">
   <dt>Description</dt>
   <dd>
@@ -624,14 +647,20 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`GET`</dd>
+  <dd>POST</dd>
 
   <dt>URL</dt>
-  <dd>`/auth/approle/role/[role_name]/secret-id-accessor/<secret_id_accessor>`</dd>
+  <dd>`/auth/approle/role/[role_name]/secret-id-accessor/lookup`</dd>
 
   <dt>Parameters</dt>
   <dd>
-    None.
+    <ul>
+      <li>
+        <span class="param">secret_id_accessor</span>
+        <span class="param-flags">required</span>
+Accessor of the secret ID
+      </li>
+    </ul>
   </dd>
 
   <dt>Returns</dt>
@@ -639,27 +668,27 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
 
 ```javascript
 {
-  "auth": null,
-  "warnings": null,
-  "wrap_info": null,
-  "data": {
-    "secret_id_ttl": 600,
-    "secret_id_num_uses": 40,
-    "secret_id_accessor": "5e222f10-278d-a829-4e74-10d71977bb53",
-    "metadata": {},
-    "last_updated_time": "2016-06-29T05:31:09.407042587Z",
-    "expiration_time": "2016-06-29T05:41:09.407042587Z",
-    "creation_time": "2016-06-29T05:31:09.407042587Z"
-  },
-  "lease_duration": 0,
-  "renewable": false,
-  "lease_id": ""
+        "request_id": "2132237e-d1b6-d298-6117-b54a2d938d00",
+        "lease_id": "",
+        "lease_duration": 0,
+        "renewable": false,
+        "data": {
+                "cidr_list": null,
+                "creation_time": "2016-09-28T22:09:02.834238344-04:00",
+                "expiration_time": "0001-01-01T00:00:00Z",
+                "last_updated_time": "2016-09-28T22:09:02.834238344-04:00",
+                "metadata": {},
+                "secret_id_accessor": "54ba219d-b539-ac4f-e3cf-763c02f351fb",
+                "secret_id_num_uses": 10,
+                "secret_id_ttl": 0
+        },
 }
 ```
 
   </dd>
 </dl>
 
+### /auth/approle/role/[role_name]/secret-id-accessor/destroy
 #### DELETE
 <dl class="api">
   <dt>Description</dt>
@@ -668,14 +697,20 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`DELETE`</dd>
+  <dd>DELETE</dd>
 
   <dt>URL</dt>
-  <dd>`/auth/approle/role/[role_name]/secret-id-accessor/<secret_id_accessor>`</dd>
+  <dd>`/auth/approle/role/[role_name]/secret-id-accessor/destroy`</dd>
 
   <dt>Parameters</dt>
   <dd>
-    None.
+    <ul>
+      <li>
+        <span class="param">secret_id_accessor</span>
+        <span class="param-flags">required</span>
+Accessor of the secret ID
+      </li>
+    </ul>
   </dd>
 
   <dt>Returns</dt>
@@ -695,7 +730,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`POST`</dd>
+  <dd>POST</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]/custom-secret-id`</dd>
@@ -717,6 +752,16 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
         string containing the metadata in key-value pairs. This metadata will
         be set on tokens issued with this SecretID, and is logged in audit logs
         _in plaintext_.
+      </li>
+    </ul>
+    <ul>
+      <li>
+        <span class="param">cidr_list</span>
+        <span class="param-flags">optional</span>
+Comma separated list of CIDR blocks enforcing secret IDs to be used from
+specific set of IP addresses. If 'bound_cidr_list' is set on the role, then the
+list of CIDR blocks listed here should be a subset of the CIDR blocks listed on
+the role.
       </li>
     </ul>
   </dd>
@@ -755,7 +800,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`POST`</dd>
+  <dd>POST</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/login`</dd>
@@ -824,7 +869,7 @@ $ curl -XPOST "http://127.0.0.1:8200/v1/auth/approle/login" -d '{"role_id":"50be
   </dd>
 
   <dt>Method</dt>
-  <dd>`POST/GET/DELETE`</dd>
+  <dd>POST/GET/DELETE</dd>
 
   <dt>URL</dt>
   <dd>`/auth/approle/role/[role_name]/[field_name]`</dd>

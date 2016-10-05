@@ -8,6 +8,7 @@ import (
 
 	"github.com/fatih/structs"
 	"github.com/hashicorp/go-uuid"
+	"github.com/hashicorp/vault/helper/cidrutil"
 	"github.com/hashicorp/vault/helper/policyutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
@@ -76,9 +77,10 @@ type roleIDStorageEntry struct {
 // role/<role_name>/role-id - For fetching the role_id of an role
 // role/<role_name>/secret-id - For issuing a secret_id against an role, also to list the secret_id_accessorss
 // role/<role_name>/custom-secret-id - For assigning a custom SecretID against an role
-// role/<role_name>/secret-id/<secret_id> - For reading the properties of, or deleting a secret_id
-// role/<role_name>/secret-id-accessor/<secret_id_accessor> - For reading the
-// 		properties of, or deleting a secret_id, using the accessor of secret_id.
+// role/<role_name>/secret-id/lookup - For reading the properties of a secret_id
+// role/<role_name>/secret-id/destroy - For deleting a secret_id
+// role/<role_name>/secret-id-accessor/lookup - For reading secret_id using accessor
+// role/<role_name>/secret-id-accessor/destroy - For deleting secret_id using accessor
 func rolePaths(b *backend) []*framework.Path {
 	return []*framework.Path{
 		&framework.Path{
@@ -356,6 +358,13 @@ be renewed. Defaults to 0, in which case the value will fall back to the system/
 					Description: `Metadata to be tied to the SecretID. This should be a JSON
 formatted string containing the metadata in key value pairs.`,
 				},
+				"cidr_list": &framework.FieldSchema{
+					Type: framework.TypeString,
+					Description: `Comma separated list of CIDR blocks enforcing secret IDs to be used from
+specific set of IP addresses. If 'bound_cidr_list' is set on the role, then the
+list of CIDR blocks listed here should be a subset of the CIDR blocks listed on
+the role.`,
+				},
 			},
 			Callbacks: map[logical.Operation]framework.OperationFunc{
 				logical.UpdateOperation: b.pathRoleSecretIDUpdate,
@@ -365,8 +374,7 @@ formatted string containing the metadata in key value pairs.`,
 			HelpDescription: strings.TrimSpace(roleHelp["role-secret-id"][1]),
 		},
 		&framework.Path{
-			Pattern: "role/" +
-				framework.GenericNameRegex("role_name") + "/secret-id/" + framework.GenericNameRegex("secret_id"),
+			Pattern: "role/" + framework.GenericNameRegex("role_name") + "/secret-id/lookup/?$",
 			Fields: map[string]*framework.FieldSchema{
 				"role_name": &framework.FieldSchema{
 					Type:        framework.TypeString,
@@ -378,15 +386,32 @@ formatted string containing the metadata in key value pairs.`,
 				},
 			},
 			Callbacks: map[logical.Operation]framework.OperationFunc{
-				logical.ReadOperation:   b.pathRoleSecretIDSecretIDRead,
-				logical.DeleteOperation: b.pathRoleSecretIDSecretIDDelete,
+				logical.UpdateOperation: b.pathRoleSecretIDLookupUpdate,
 			},
-			HelpSynopsis:    strings.TrimSpace(roleHelp["role-secret-id-secret-id"][0]),
-			HelpDescription: strings.TrimSpace(roleHelp["role-secret-id-secret-id"][1]),
+			HelpSynopsis:    strings.TrimSpace(roleHelp["role-secret-id-lookup"][0]),
+			HelpDescription: strings.TrimSpace(roleHelp["role-secret-id-lookup"][1]),
 		},
 		&framework.Path{
-			Pattern: "role/" +
-				framework.GenericNameRegex("role_name") + "/secret-id-accessor/" + framework.GenericNameRegex("secret_id_accessor"),
+			Pattern: "role/" + framework.GenericNameRegex("role_name") + "/secret-id/destroy/?$",
+			Fields: map[string]*framework.FieldSchema{
+				"role_name": &framework.FieldSchema{
+					Type:        framework.TypeString,
+					Description: "Name of the role.",
+				},
+				"secret_id": &framework.FieldSchema{
+					Type:        framework.TypeString,
+					Description: "SecretID attached to the role.",
+				},
+			},
+			Callbacks: map[logical.Operation]framework.OperationFunc{
+				logical.UpdateOperation: b.pathRoleSecretIDDestroyUpdateDelete,
+				logical.DeleteOperation: b.pathRoleSecretIDDestroyUpdateDelete,
+			},
+			HelpSynopsis:    strings.TrimSpace(roleHelp["role-secret-id-destroy"][0]),
+			HelpDescription: strings.TrimSpace(roleHelp["role-secret-id-destroy"][1]),
+		},
+		&framework.Path{
+			Pattern: "role/" + framework.GenericNameRegex("role_name") + "/secret-id-accessor/lookup/?$",
 			Fields: map[string]*framework.FieldSchema{
 				"role_name": &framework.FieldSchema{
 					Type:        framework.TypeString,
@@ -398,8 +423,26 @@ formatted string containing the metadata in key value pairs.`,
 				},
 			},
 			Callbacks: map[logical.Operation]framework.OperationFunc{
-				logical.ReadOperation:   b.pathRoleSecretIDAccessorRead,
-				logical.DeleteOperation: b.pathRoleSecretIDAccessorDelete,
+				logical.UpdateOperation: b.pathRoleSecretIDAccessorLookupUpdate,
+			},
+			HelpSynopsis:    strings.TrimSpace(roleHelp["role-secret-id-accessor"][0]),
+			HelpDescription: strings.TrimSpace(roleHelp["role-secret-id-accessor"][1]),
+		},
+		&framework.Path{
+			Pattern: "role/" + framework.GenericNameRegex("role_name") + "/secret-id-accessor/destroy/?$",
+			Fields: map[string]*framework.FieldSchema{
+				"role_name": &framework.FieldSchema{
+					Type:        framework.TypeString,
+					Description: "Name of the role.",
+				},
+				"secret_id_accessor": &framework.FieldSchema{
+					Type:        framework.TypeString,
+					Description: "Accessor of the SecretID",
+				},
+			},
+			Callbacks: map[logical.Operation]framework.OperationFunc{
+				logical.UpdateOperation: b.pathRoleSecretIDAccessorDestroyUpdateDelete,
+				logical.DeleteOperation: b.pathRoleSecretIDAccessorDestroyUpdateDelete,
 			},
 			HelpSynopsis:    strings.TrimSpace(roleHelp["role-secret-id-accessor"][0]),
 			HelpDescription: strings.TrimSpace(roleHelp["role-secret-id-accessor"][1]),
@@ -419,6 +462,13 @@ formatted string containing the metadata in key value pairs.`,
 					Type: framework.TypeString,
 					Description: `Metadata to be tied to the SecretID. This should be a JSON
 formatted string containing metadata in key value pairs.`,
+				},
+				"cidr_list": &framework.FieldSchema{
+					Type: framework.TypeString,
+					Description: `Comma separated list of CIDR blocks enforcing secret IDs to be used from
+specific set of IP addresses. If 'bound_cidr_list' is set on the role, then the
+list of CIDR blocks listed here should be a subset of the CIDR blocks listed on
+the role.`,
 				},
 			},
 			Callbacks: map[logical.Operation]framework.OperationFunc{
@@ -441,8 +491,12 @@ func (b *backend) pathRoleExistenceCheck(req *logical.Request, data *framework.F
 
 // pathRoleList is used to list all the Roles registered with the backend.
 func (b *backend) pathRoleList(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.roleLock.RLock()
-	defer b.roleLock.RUnlock()
+	// This will return the "custom" lock
+	lock := b.roleLock("")
+
+	lock.RLock()
+	defer lock.RUnlock()
+
 	roles, err := req.Storage.List("role/")
 	if err != nil {
 		return nil, err
@@ -517,11 +571,40 @@ func (b *backend) pathRoleSecretIDList(req *logical.Request, data *framework.Fie
 	return logical.ListResponse(listItems), nil
 }
 
-// setRoleEntry grabs a write lock and stores the options on an role into the storage.
-// Also creates a reverse index from the role's RoleID to the role itself.
+// validateRoleConstraints checks if the role has at least one constraint
+// enabled.
+func validateRoleConstraints(role *roleStorageEntry) error {
+	if role == nil {
+		return fmt.Errorf("nil role")
+	}
+
+	// At least one constraint should be enabled on the role
+	switch {
+	case role.BindSecretID:
+	case role.BoundCIDRList != "":
+	default:
+		return fmt.Errorf("at least one constraint should be enabled on the role")
+	}
+
+	return nil
+}
+
+// setRoleEntry grabs a write lock and stores the options on an role into the
+// storage. Also creates a reverse index from the role's RoleID to the role
+// itself.
 func (b *backend) setRoleEntry(s logical.Storage, roleName string, role *roleStorageEntry, previousRoleID string) error {
-	b.roleLock.Lock()
-	defer b.roleLock.Unlock()
+	if roleName == "" {
+		return fmt.Errorf("missing role name")
+	}
+
+	if role == nil {
+		return fmt.Errorf("nil role")
+	}
+
+	// Check if role constraints are properly set
+	if err := validateRoleConstraints(role); err != nil {
+		return err
+	}
 
 	// Create a storage entry for the role
 	entry, err := logical.StorageEntryJSON("role/"+strings.ToLower(roleName), role)
@@ -556,6 +639,11 @@ func (b *backend) setRoleEntry(s logical.Storage, roleName string, role *roleSto
 		return err
 	}
 
+	// If previousRoleID is still intact, don't create another one
+	if previousRoleID != "" {
+		return nil
+	}
+
 	// Create a storage entry for reverse mapping of RoleID to role.
 	// Note that secondary index is created when the roleLock is held.
 	return b.setRoleIDEntry(s, role.RoleID, &roleIDStorageEntry{
@@ -569,20 +657,22 @@ func (b *backend) roleEntry(s logical.Storage, roleName string) (*roleStorageEnt
 		return nil, fmt.Errorf("missing role_name")
 	}
 
-	var result roleStorageEntry
+	var role roleStorageEntry
 
-	b.roleLock.RLock()
-	defer b.roleLock.RUnlock()
+	lock := b.roleLock(roleName)
+
+	lock.RLock()
+	defer lock.RUnlock()
 
 	if entry, err := s.Get("role/" + strings.ToLower(roleName)); err != nil {
 		return nil, err
 	} else if entry == nil {
 		return nil, nil
-	} else if err := entry.DecodeJSON(&result); err != nil {
+	} else if err := entry.DecodeJSON(&role); err != nil {
 		return nil, err
 	}
 
-	return &result, nil
+	return &role, nil
 }
 
 // pathRoleCreateUpdate registers a new role with the backend or updates the options
@@ -637,8 +727,15 @@ func (b *backend) pathRoleCreateUpdate(req *logical.Request, data *framework.Fie
 	} else if req.Operation == logical.CreateOperation {
 		role.BoundCIDRList = data.Get("bound_cidr_list").(string)
 	}
-	if err = validateCIDRList(role.BoundCIDRList); err != nil {
-		return logical.ErrorResponse(fmt.Sprintf("failed to validate CIDR blocks: %s", err)), nil
+
+	if role.BoundCIDRList != "" {
+		valid, err := cidrutil.ValidateCIDRListString(role.BoundCIDRList, ",")
+		if err != nil {
+			return nil, fmt.Errorf("failed to validate CIDR blocks: %v", err)
+		}
+		if !valid {
+			return logical.ErrorResponse("invalid CIDR blocks"), nil
+		}
 	}
 
 	if policiesRaw, ok := data.GetOk("policies"); ok {
@@ -724,9 +821,15 @@ func (b *backend) pathRoleRead(req *logical.Request, data *framework.FieldData) 
 		delete(data, "role_id")
 		delete(data, "hmac_key")
 
-		return &logical.Response{
+		resp := &logical.Response{
 			Data: data,
-		}, nil
+		}
+
+		if err := validateRoleConstraints(role); err != nil {
+			resp.AddWarning("Role does not have any constraints set on it. Updates to this role will require a constraint to be set")
+		}
+
+		return resp, nil
 	}
 }
 
@@ -741,10 +844,14 @@ func (b *backend) pathRoleDelete(req *logical.Request, data *framework.FieldData
 	if err != nil {
 		return nil, err
 	}
+	if role == nil {
+		return nil, nil
+	}
 
 	// Acquire the lock before deleting the secrets.
-	b.roleLock.Lock()
-	defer b.roleLock.Unlock()
+	lock := b.roleLock(roleName)
+	lock.Lock()
+	defer lock.Unlock()
 
 	// Just before the role is deleted, remove all the SecretIDs issued as part of the role.
 	if err = b.flushRoleSecrets(req.Storage, roleName, role.HMACKey); err != nil {
@@ -765,7 +872,7 @@ func (b *backend) pathRoleDelete(req *logical.Request, data *framework.FieldData
 }
 
 // Returns the properties of the SecretID
-func (b *backend) pathRoleSecretIDSecretIDRead(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (b *backend) pathRoleSecretIDLookupUpdate(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	roleName := data.Get("role_name").(string)
 	if roleName == "" {
 		return logical.ErrorResponse("missing role_name"), nil
@@ -825,16 +932,22 @@ func (b *backend) secretIDCommon(s logical.Storage, entryIndex, secretIDHMAC str
 	// Map() from 'structs' package formats time in RFC3339Nano.
 	// In order to not break the API due to a modification in the
 	// third party package, converting the time values again.
-	d["creation_time"] = (d["creation_time"].(time.Time)).Format(time.RFC3339Nano)
-	d["expiration_time"] = (d["expiration_time"].(time.Time)).Format(time.RFC3339Nano)
-	d["last_updated_time"] = (d["last_updated_time"].(time.Time)).Format(time.RFC3339Nano)
+	d["creation_time"] = result.CreationTime.Format(time.RFC3339Nano)
+	d["expiration_time"] = result.ExpirationTime.Format(time.RFC3339Nano)
+	d["last_updated_time"] = result.LastUpdatedTime.Format(time.RFC3339Nano)
 
-	return &logical.Response{
+	resp := &logical.Response{
 		Data: d,
-	}, nil
+	}
+
+	if _, ok := d["SecretIDNumUses"]; ok {
+		resp.AddWarning("The field SecretIDNumUses is deprecated and will be removed in a future release; refer to secret_id_num_uses instead")
+	}
+
+	return resp, nil
 }
 
-func (b *backend) pathRoleSecretIDSecretIDDelete(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (b *backend) pathRoleSecretIDDestroyUpdateDelete(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	roleName := data.Get("role_name").(string)
 	if roleName == "" {
 		return logical.ErrorResponse("missing role_name"), nil
@@ -878,11 +991,9 @@ func (b *backend) pathRoleSecretIDSecretIDDelete(req *logical.Request, data *fra
 		return nil, err
 	}
 
-	accessorEntryIndex := "accessor/" + b.salt.SaltID(result.SecretIDAccessor)
-
 	// Delete the accessor of the SecretID first
-	if err := req.Storage.Delete(accessorEntryIndex); err != nil {
-		return nil, fmt.Errorf("failed to delete accessor storage entry: %s", err)
+	if err := b.deleteSecretIDAccessorEntry(req.Storage, result.SecretIDAccessor); err != nil {
+		return nil, err
 	}
 
 	// Delete the storage entry that corresponds to the SecretID
@@ -893,8 +1004,9 @@ func (b *backend) pathRoleSecretIDSecretIDDelete(req *logical.Request, data *fra
 	return nil, nil
 }
 
-// Returns the properties of the SecretID
-func (b *backend) pathRoleSecretIDAccessorRead(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+// pathRoleSecretIDAccessorLookupUpdate returns the properties of the SecretID
+// given its accessor
+func (b *backend) pathRoleSecretIDAccessorLookupUpdate(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	roleName := data.Get("role_name").(string)
 	if roleName == "" {
 		return logical.ErrorResponse("missing role_name"), nil
@@ -935,7 +1047,7 @@ func (b *backend) pathRoleSecretIDAccessorRead(req *logical.Request, data *frame
 	return b.secretIDCommon(req.Storage, entryIndex, accessorEntry.SecretIDHMAC)
 }
 
-func (b *backend) pathRoleSecretIDAccessorDelete(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+func (b *backend) pathRoleSecretIDAccessorDestroyUpdateDelete(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	roleName := data.Get("role_name").(string)
 	if roleName == "" {
 		return logical.ErrorResponse("missing role_name"), nil
@@ -972,15 +1084,14 @@ func (b *backend) pathRoleSecretIDAccessorDelete(req *logical.Request, data *fra
 	}
 
 	entryIndex := fmt.Sprintf("secret_id/%s/%s", roleNameHMAC, accessorEntry.SecretIDHMAC)
-	accessorEntryIndex := "accessor/" + b.salt.SaltID(secretIDAccessor)
 
 	lock := b.secretIDLock(accessorEntry.SecretIDHMAC)
 	lock.Lock()
 	defer lock.Unlock()
 
 	// Delete the accessor of the SecretID first
-	if err := req.Storage.Delete(accessorEntryIndex); err != nil {
-		return nil, fmt.Errorf("failed to delete accessor storage entry: %s", err)
+	if err := b.deleteSecretIDAccessorEntry(req.Storage, secretIDAccessor); err != nil {
+		return nil, err
 	}
 
 	// Delete the storage entry that corresponds to the SecretID
@@ -1005,13 +1116,24 @@ func (b *backend) pathRoleBoundCIDRListUpdate(req *logical.Request, data *framew
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	role.BoundCIDRList = strings.TrimSpace(data.Get("bound_cidr_list").(string))
 	if role.BoundCIDRList == "" {
 		return logical.ErrorResponse("missing bound_cidr_list"), nil
 	}
 
-	if err = validateCIDRList(role.BoundCIDRList); err != nil {
-		return logical.ErrorResponse(fmt.Sprintf("failed to validate CIDR blocks: %s", err)), nil
+	if role.BoundCIDRList != "" {
+		valid, err := cidrutil.ValidateCIDRListString(role.BoundCIDRList, ",")
+		if err != nil {
+			return nil, fmt.Errorf("failed to validate CIDR blocks: %q", err)
+		}
+		if !valid {
+			return logical.ErrorResponse("failed to validate CIDR blocks"), nil
+		}
 	}
 
 	return nil, b.setRoleEntry(req.Storage, roleName, role, "")
@@ -1050,6 +1172,11 @@ func (b *backend) pathRoleBoundCIDRListDelete(req *logical.Request, data *framew
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	// Deleting a field implies setting the value to it's default value.
 	role.BoundCIDRList = data.GetDefaultOrZero("bound_cidr_list").(string)
 
@@ -1069,6 +1196,11 @@ func (b *backend) pathRoleBindSecretIDUpdate(req *logical.Request, data *framewo
 	if role == nil {
 		return nil, nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	if bindSecretIDRaw, ok := data.GetOk("bind_secret_id"); ok {
 		role.BindSecretID = bindSecretIDRaw.(bool)
@@ -1111,6 +1243,11 @@ func (b *backend) pathRoleBindSecretIDDelete(req *logical.Request, data *framewo
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	// Deleting a field implies setting the value to it's default value.
 	role.BindSecretID = data.GetDefaultOrZero("bind_secret_id").(bool)
 
@@ -1135,6 +1272,11 @@ func (b *backend) pathRolePoliciesUpdate(req *logical.Request, data *framework.F
 	if policies == "" {
 		return logical.ErrorResponse("missing policies"), nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	role.Policies = policyutil.ParsePolicies(policies)
 
@@ -1174,6 +1316,11 @@ func (b *backend) pathRolePoliciesDelete(req *logical.Request, data *framework.F
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	role.Policies = policyutil.ParsePolicies(data.GetDefaultOrZero("policies").(string))
 
 	return nil, b.setRoleEntry(req.Storage, roleName, role, "")
@@ -1192,6 +1339,11 @@ func (b *backend) pathRoleSecretIDNumUsesUpdate(req *logical.Request, data *fram
 	if role == nil {
 		return nil, nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	if numUsesRaw, ok := data.GetOk("secret_id_num_uses"); ok {
 		role.SecretIDNumUses = numUsesRaw.(int)
@@ -1217,6 +1369,11 @@ func (b *backend) pathRoleRoleIDUpdate(req *logical.Request, data *framework.Fie
 	if role == nil {
 		return nil, nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	previousRoleID := role.RoleID
 	role.RoleID = data.Get("role_id").(string)
@@ -1279,6 +1436,11 @@ func (b *backend) pathRoleSecretIDNumUsesDelete(req *logical.Request, data *fram
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	role.SecretIDNumUses = data.GetDefaultOrZero("secret_id_num_uses").(int)
 
 	return nil, b.setRoleEntry(req.Storage, roleName, role, "")
@@ -1297,6 +1459,11 @@ func (b *backend) pathRoleSecretIDTTLUpdate(req *logical.Request, data *framewor
 	if role == nil {
 		return nil, nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	if secretIDTTLRaw, ok := data.GetOk("secret_id_ttl"); ok {
 		role.SecretIDTTL = time.Second * time.Duration(secretIDTTLRaw.(int))
@@ -1340,6 +1507,11 @@ func (b *backend) pathRoleSecretIDTTLDelete(req *logical.Request, data *framewor
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	role.SecretIDTTL = time.Second * time.Duration(data.GetDefaultOrZero("secret_id_ttl").(int))
 
 	return nil, b.setRoleEntry(req.Storage, roleName, role, "")
@@ -1358,6 +1530,11 @@ func (b *backend) pathRolePeriodUpdate(req *logical.Request, data *framework.Fie
 	if role == nil {
 		return nil, nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	if periodRaw, ok := data.GetOk("period"); ok {
 		role.Period = time.Second * time.Duration(periodRaw.(int))
@@ -1404,6 +1581,11 @@ func (b *backend) pathRolePeriodDelete(req *logical.Request, data *framework.Fie
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	role.Period = time.Second * time.Duration(data.GetDefaultOrZero("period").(int))
 
 	return nil, b.setRoleEntry(req.Storage, roleName, role, "")
@@ -1422,6 +1604,11 @@ func (b *backend) pathRoleTokenTTLUpdate(req *logical.Request, data *framework.F
 	if role == nil {
 		return nil, nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	if tokenTTLRaw, ok := data.GetOk("token_ttl"); ok {
 		role.TokenTTL = time.Second * time.Duration(tokenTTLRaw.(int))
@@ -1468,6 +1655,11 @@ func (b *backend) pathRoleTokenTTLDelete(req *logical.Request, data *framework.F
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	role.TokenTTL = time.Second * time.Duration(data.GetDefaultOrZero("token_ttl").(int))
 
 	return nil, b.setRoleEntry(req.Storage, roleName, role, "")
@@ -1486,6 +1678,11 @@ func (b *backend) pathRoleTokenMaxTTLUpdate(req *logical.Request, data *framewor
 	if role == nil {
 		return nil, nil
 	}
+
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	if tokenMaxTTLRaw, ok := data.GetOk("token_max_ttl"); ok {
 		role.TokenMaxTTL = time.Second * time.Duration(tokenMaxTTLRaw.(int))
@@ -1532,6 +1729,11 @@ func (b *backend) pathRoleTokenMaxTTLDelete(req *logical.Request, data *framewor
 		return nil, nil
 	}
 
+	lock := b.roleLock(roleName)
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	role.TokenMaxTTL = time.Second * time.Duration(data.GetDefaultOrZero("token_max_ttl").(int))
 
 	return nil, b.setRoleEntry(req.Storage, roleName, role, "")
@@ -1571,10 +1773,32 @@ func (b *backend) handleRoleSecretIDCommon(req *logical.Request, data *framework
 		return logical.ErrorResponse("bind_secret_id is not set on the role"), nil
 	}
 
+	cidrList := data.Get("cidr_list").(string)
+
+	// Validate the list of CIDR blocks
+	if cidrList != "" {
+		valid, err := cidrutil.ValidateCIDRListString(cidrList, ",")
+		if err != nil {
+			return nil, fmt.Errorf("failed to validate CIDR blocks: %q", err)
+		}
+		if !valid {
+			return logical.ErrorResponse("failed to validate CIDR blocks"), nil
+		}
+	}
+
+	// Parse the CIDR blocks into a slice
+	secretIDCIDRs := strutil.ParseDedupAndSortStrings(cidrList, ",")
+
+	// Ensure that the CIDRs on the secret ID are a subset of that of role's
+	if err := verifyCIDRRoleSecretIDSubset(secretIDCIDRs, role.BoundCIDRList); err != nil {
+		return nil, err
+	}
+
 	secretIDStorage := &secretIDStorageEntry{
 		SecretIDNumUses: role.SecretIDNumUses,
 		SecretIDTTL:     role.SecretIDTTL,
 		Metadata:        make(map[string]string),
+		CIDRList:        secretIDCIDRs,
 	}
 
 	if err = strutil.ParseArbitraryKeyValues(data.Get("metadata").(string), secretIDStorage.Metadata, ","); err != nil {
@@ -1604,8 +1828,26 @@ func (b *backend) roleIDLock(roleID string) *sync.RWMutex {
 		lock, ok = b.roleIDLocksMap[roleID[0:2]]
 	}
 	if !ok || lock == nil {
-		// Fall back for custom SecretIDs
 		lock = b.roleIDLocksMap["custom"]
+	}
+	return lock
+}
+
+// roleLock is used to get a lock from the pre-initialized map of locks. Map is
+// indexed based on the first 2 characters of the salted role name, which is a
+// random UUID. If the input is empty, a "custom" lock will be returned.
+func (b *backend) roleLock(roleName string) *sync.RWMutex {
+	var lock *sync.RWMutex
+	var ok bool
+
+	// Salting is used to induce randomness so that roles starting with
+	// similar characters will likely end up having different locks
+	index := b.salt.SaltID(roleName)
+	if len(index) >= 2 {
+		lock, ok = b.roleLocksMap[index[0:2]]
+	}
+	if !ok || lock == nil {
+		lock = b.roleLocksMap["custom"]
 	}
 	return lock
 }
@@ -1717,19 +1959,29 @@ that are generated against the role using 'role/<role_name>/secret-id' or
 'role/<role_name>/custom-secret-id' endpoints.`,
 		``,
 	},
-	"role-secret-id-secret-id": {
-		"Read or delete a issued secret_id",
-		`This endpoint is used to either read the properties of a
-secret_id associated to a role or to invalidate it.`,
+	"role-secret-id-lookup": {
+		"Read the properties of an issued secret_id",
+		`This endpoint is used to read the properties of a secret_id associated to a
+role.`},
+	"role-secret-id-destroy": {
+		"Invalidate an issued secret_id",
+		`This endpoint is used to delete the properties of a secret_id associated to a
+role.`},
+	"role-secret-id-accessor-lookup": {
+		"Read an issued secret_id, using its accessor",
+		`This is particularly useful to lookup the non-expiring 'secret_id's.
+The list operation on the 'role/<role_name>/secret-id' endpoint will return
+the 'secret_id_accessor's. This endpoint can be used to read the properties
+of the secret. If the 'secret_id_num_uses' field in the response is 0, it
+represents a non-expiring 'secret_id'.`,
 	},
-	"role-secret-id-accessor": {
-		"Read or delete a issued secret_id, using its accessor",
+	"role-secret-id-accessor-destroy": {
+		"Delete an issued secret_id, using its accessor",
 		`This is particularly useful to clean-up the non-expiring 'secret_id's.
 The list operation on the 'role/<role_name>/secret-id' endpoint will return
 the 'secret_id_accessor's. This endpoint can be used to read the properties
 of the secret. If the 'secret_id_num_uses' field in the response is 0, it
-represents a non-expiring 'secret_id'. This endpoint can be invoked to delete
-the 'secret_id's as well.`,
+represents a non-expiring 'secret_id'.`,
 	},
 	"role-token-ttl": {
 		`Duration in seconds, the lifetime of the token issued by using the SecretID that

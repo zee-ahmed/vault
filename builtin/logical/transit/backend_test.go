@@ -4,12 +4,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math/rand"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	uuid "github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 	logicaltest "github.com/hashicorp/vault/logical/testing"
@@ -29,6 +31,8 @@ func TestBackend_basic(t *testing.T) {
 			testAccStepReadPolicy(t, "test", false, false),
 			testAccStepEncrypt(t, "test", testPlaintext, decryptData),
 			testAccStepDecrypt(t, "test", testPlaintext, decryptData),
+			testAccStepEncrypt(t, "test", "", decryptData),
+			testAccStepDecrypt(t, "test", "", decryptData),
 			testAccStepDeleteNotDisabledPolicy(t, "test"),
 			testAccStepEnableDeletion(t, "test"),
 			testAccStepDeletePolicy(t, "test"),
@@ -225,9 +229,9 @@ func testAccStepReadPolicy(t *testing.T, name string, expectNone, derived bool) 
 				Name                 string           `mapstructure:"name"`
 				Key                  []byte           `mapstructure:"key"`
 				Keys                 map[string]int64 `mapstructure:"keys"`
-				CipherMode           string           `mapstructure:"cipher_mode"`
+				Type                 string           `mapstructure:"type"`
 				Derived              bool             `mapstructure:"derived"`
-				KDFMode              string           `mapstructure:"kdf_mode"`
+				KDF                  string           `mapstructure:"kdf"`
 				DeletionAllowed      bool             `mapstructure:"deletion_allowed"`
 				ConvergentEncryption bool             `mapstructure:"convergent_encryption"`
 			}
@@ -236,10 +240,10 @@ func testAccStepReadPolicy(t *testing.T, name string, expectNone, derived bool) 
 			}
 
 			if d.Name != name {
-				return fmt.Errorf("bad: %#v", d)
+				return fmt.Errorf("bad name: %#v", d)
 			}
-			if d.CipherMode != "aes-gcm" {
-				return fmt.Errorf("bad: %#v", d)
+			if d.Type != KeyType(keyType_AES256_GCM96).String() {
+				return fmt.Errorf("bad key type: %#v", d)
 			}
 			// Should NOT get a key back
 			if d.Key != nil {
@@ -254,7 +258,7 @@ func testAccStepReadPolicy(t *testing.T, name string, expectNone, derived bool) 
 			if d.Derived != derived {
 				return fmt.Errorf("bad: %#v", d)
 			}
-			if derived && d.KDFMode != kdfMode {
+			if derived && d.KDF != "hkdf_sha256" {
 				return fmt.Errorf("bad: %#v", d)
 			}
 			return nil
@@ -531,10 +535,11 @@ func testAccStepDecryptDatakey(t *testing.T, name string,
 }
 
 func TestKeyUpgrade(t *testing.T) {
-	p := &Policy{
-		Name:       "test",
-		Key:        []byte(testPlaintext),
-		CipherMode: "aes-gcm",
+	key, _ := uuid.GenerateRandomBytes(32)
+	p := &policy{
+		Name: "test",
+		Key:  key,
+		Type: keyType_AES256_GCM96,
 	}
 
 	p.migrateKeyToKeysMap()
@@ -542,12 +547,74 @@ func TestKeyUpgrade(t *testing.T) {
 	if p.Key != nil ||
 		p.Keys == nil ||
 		len(p.Keys) != 1 ||
-		string(p.Keys[1].Key) != testPlaintext {
+		!reflect.DeepEqual(p.Keys[1].AESKey, key) {
 		t.Errorf("bad key migration, result is %#v", p.Keys)
 	}
 }
 
+func TestDerivedKeyUpgrade(t *testing.T) {
+	storage := &logical.InmemStorage{}
+	key, _ := uuid.GenerateRandomBytes(32)
+	context, _ := uuid.GenerateRandomBytes(32)
+
+	p := &policy{
+		Name:    "test",
+		Key:     key,
+		Type:    keyType_AES256_GCM96,
+		Derived: true,
+	}
+
+	p.migrateKeyToKeysMap()
+	p.upgrade(storage) // Need to run the upgrade code to make the migration stick
+
+	if p.KDF != kdf_hmac_sha256_counter {
+		t.Fatalf("bad KDF value by default; counter val is %d, KDF val is %d, policy is %#v", kdf_hmac_sha256_counter, p.KDF, *p)
+	}
+
+	derBytesOld, err := p.DeriveKey(context, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	derBytesOld2, err := p.DeriveKey(context, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(derBytesOld, derBytesOld2) {
+		t.Fatal("mismatch of same context alg")
+	}
+
+	p.KDF = kdf_hkdf_sha256
+	if p.needsUpgrade() {
+		t.Fatal("expected no upgrade needed")
+	}
+
+	derBytesNew, err := p.DeriveKey(context, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	derBytesNew2, err := p.DeriveKey(context, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(derBytesNew, derBytesNew2) {
+		t.Fatal("mismatch of same context alg")
+	}
+
+	if reflect.DeepEqual(derBytesOld, derBytesNew) {
+		t.Fatal("match of different context alg")
+	}
+}
+
 func TestConvergentEncryption(t *testing.T) {
+	testConvergentEncryptionCommon(t, 0)
+	testConvergentEncryptionCommon(t, 2)
+}
+
+func testConvergentEncryptionCommon(t *testing.T, ver int) {
 	var b *backend
 	sysView := logical.TestSystemView()
 	storage := &logical.InmemStorage{}
@@ -578,43 +645,44 @@ func TestConvergentEncryption(t *testing.T) {
 		t.Fatalf("bad: expected error response, got %#v", *resp)
 	}
 
-	req.Path = "keys/testkey"
-	req.Data = map[string]interface{}{
-		"derived":               true,
-		"convergent_encryption": true,
+	p := &policy{
+		Name:                 "testkey",
+		Type:                 keyType_AES256_GCM96,
+		Derived:              true,
+		ConvergentEncryption: true,
+		ConvergentVersion:    ver,
 	}
 
-	resp, err = b.HandleRequest(req)
+	err = p.rotate(storage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp != nil {
-		t.Fatalf("bad: got resp %#v", *resp)
-	}
 
-	// First, test using an invalid length of nonce
+	// First, test using an invalid length of nonce -- this is only used for v1 convergent
 	req.Path = "encrypt/testkey"
-	req.Data = map[string]interface{}{
-		"plaintext": "emlwIHphcA==", // "zip zap"
-		"nonce":     "Zm9vIGJhcg==", // "foo bar"
-		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
-	}
-	resp, err = b.HandleRequest(req)
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if !resp.IsError() {
-		t.Fatalf("expected error response, got %#v", *resp)
-	}
+	if ver < 2 {
+		req.Data = map[string]interface{}{
+			"plaintext": "emlwIHphcA==", // "zip zap"
+			"nonce":     "Zm9vIGJhcg==", // "foo bar"
+			"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+		}
+		resp, err = b.HandleRequest(req)
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if !resp.IsError() {
+			t.Fatalf("expected error response, got %#v", *resp)
+		}
 
-	// Ensure we fail if we do not provide a nonce
-	req.Data = map[string]interface{}{
-		"plaintext": "emlwIHphcA==", // "zip zap"
-		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
-	}
-	resp, err = b.HandleRequest(req)
-	if err == nil && (resp == nil || !resp.IsError()) {
-		t.Fatal("expected error response")
+		// Ensure we fail if we do not provide a nonce
+		req.Data = map[string]interface{}{
+			"plaintext": "emlwIHphcA==", // "zip zap"
+			"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+		}
+		resp, err = b.HandleRequest(req)
+		if err == nil && (resp == nil || !resp.IsError()) {
+			t.Fatal("expected error response")
+		}
 	}
 
 	// Now test encrypting the same value twice
@@ -651,6 +719,12 @@ func TestConvergentEncryption(t *testing.T) {
 		"nonce":     "dHdvdGhyZWVmb3Vy", // "twothreefour"
 		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
 	}
+	if ver < 2 {
+		req.Data["nonce"] = "dHdvdGhyZWVmb3Vy" // "twothreefour"
+	} else {
+		req.Data["context"] = "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOldandSdd7S"
+	}
+
 	resp, err = b.HandleRequest(req)
 	if resp == nil {
 		t.Fatal("expected non-nil response")
@@ -708,6 +782,48 @@ func TestConvergentEncryption(t *testing.T) {
 	}
 	if ciphertext3 == ciphertext5 {
 		t.Fatalf("expected different ciphertexts")
+	}
+
+	// Finally, check operations on empty values
+	// First, check without setting a plaintext at all
+	req.Data = map[string]interface{}{
+		"nonce":   "b25ldHdvdGhyZWVl", // "onetwothreee"
+		"context": "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+	}
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if !resp.IsError() {
+		t.Fatalf("expected error response, got: %#v", *resp)
+	}
+
+	// Now set plaintext to empty
+	req.Data = map[string]interface{}{
+		"plaintext": "",
+		"nonce":     "b25ldHdvdGhyZWVl", // "onetwothreee"
+		"context":   "pWZ6t/im3AORd0lVYE0zBdKpX6Bl3/SvFtoVTPWbdkzjG788XmMAnOlxandSdd7S",
+	}
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext7 := resp.Data["ciphertext"].(string)
+
+	resp, err = b.HandleRequest(req)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.IsError() {
+		t.Fatalf("got error response: %#v", *resp)
+	}
+	ciphertext8 := resp.Data["ciphertext"].(string)
+
+	if ciphertext7 != ciphertext8 {
+		t.Fatalf("expected the same ciphertext but got %s and %s", ciphertext7, ciphertext8)
 	}
 }
 

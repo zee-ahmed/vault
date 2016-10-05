@@ -298,10 +298,10 @@ subpath for interactive help output.
   </dd>
 
   <dt>Method</dt>
-  <dd>GET</dd>
+  <dd>LIST/GET</dd>
 
   <dt>URL</dt>
-  <dd>`/roles/?list=true`</dd>
+  <dd>`/postgresql/roles` (LIST) or `/postgresql/roles/?list=true` (GET)</dd>
 
   <dt>Parameters</dt>
   <dd>
@@ -317,7 +317,7 @@ subpath for interactive help output.
     "data": {
       "keys": ["dev", "prod"]
     },
-    "lease_duration": 2592000,
+    "lease_duration": 2764800,
     "lease_id": "",
     "renewable": false
   }
