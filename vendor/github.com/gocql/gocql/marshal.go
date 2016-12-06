@@ -1094,6 +1094,7 @@ func unmarshalTimestamp(info TypeInfo, data []byte, value interface{}) error {
 		return nil
 	case *time.Time:
 		if len(data) == 0 {
+			*v = time.Time{}
 			return nil
 		}
 		x := decBigInt(data)
@@ -1589,7 +1590,7 @@ func marshalUDT(info TypeInfo, value interface{}) ([]byte, error) {
 		for _, e := range udt.Elements {
 			val, ok := v[e.Name]
 			if !ok {
-				return nil, marshalErrorf("missing UDT field in map: %s", e.Name)
+				continue
 			}
 
 			data, err := Marshal(e.Type, val)
