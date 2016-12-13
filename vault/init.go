@@ -5,9 +5,20 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/hashicorp/go-uuid"
+	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/pgpkeys"
 	"github.com/hashicorp/vault/shamir"
 )
+
+// unsealMetadataStorageEntry holds metadata about the unseal operation. This
+// informaion is stored during the initialization and is fetched post unseal
+// for auditing purposes.
+type unsealMetadataStorageEntry struct {
+	// Data is a map from the unseak key shard to its respective unique
+	// identifier which can be audit logged.
+	Data map[string]interface{} `json:"data" structs:"data" mapstructure:"data"`
+}
 
 // InitParams keeps the init function from being littered with too many
 // params, that's it!
@@ -50,40 +61,39 @@ func (c *Core) Initialized() (bool, error) {
 	return true, nil
 }
 
-func (c *Core) generateShares(sc *SealConfig) ([]byte, [][]byte, error) {
+func (c *Core) generateShares(sc *SealConfig) ([]byte, [][]byte, [][]byte, error) {
 	// Generate a master key
-	masterKey, err := c.barrier.GenerateKey()
+	masterKeyBytes, err := c.barrier.GenerateKey()
 	if err != nil {
-		return nil, nil, fmt.Errorf("key generation failed: %v", err)
+		return nil, nil, nil, fmt.Errorf("key generation failed: %v", err)
 	}
 
 	// Return the master key if only a single key part is used
 	var unsealKeys [][]byte
 	if sc.SecretShares == 1 {
-		unsealKeys = append(unsealKeys, masterKey)
+		unsealKeys = append(unsealKeys, masterKeyBytes)
 	} else {
 		// Split the master key using the Shamir algorithm
-		shares, err := shamir.Split(masterKey, sc.SecretShares, sc.SecretThreshold)
+		unsealKeys, err = shamir.Split(masterKeyBytes, sc.SecretShares, sc.SecretThreshold)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to generate barrier shares: %v", err)
+			return nil, nil, nil, fmt.Errorf("failed to generate barrier shares: %v", err)
 		}
-		unsealKeys = shares
 	}
 
 	// If we have PGP keys, perform the encryption
+	var encryptedUnsealKeys [][]byte
 	if len(sc.PGPKeys) > 0 {
 		hexEncodedShares := make([][]byte, len(unsealKeys))
 		for i, _ := range unsealKeys {
 			hexEncodedShares[i] = []byte(hex.EncodeToString(unsealKeys[i]))
 		}
-		_, encryptedShares, err := pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
+		_, encryptedUnsealKeys, err = pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		unsealKeys = encryptedShares
 	}
 
-	return masterKey, unsealKeys, nil
+	return masterKeyBytes, unsealKeys, encryptedUnsealKeys, nil
 }
 
 // Initialize is used to initialize the Vault with the given
@@ -139,10 +149,20 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		return nil, fmt.Errorf("barrier configuration saving failed: %v", err)
 	}
 
-	barrierKey, barrierUnsealKeys, err := c.generateShares(barrierConfig)
+	var returnedKeys [][]byte
+	barrierKey, barrierUnsealKeys, barrierEncryptedUnsealKeys, err := c.generateShares(barrierConfig)
 	if err != nil {
 		c.logger.Error("core: error generating shares", "error", err)
 		return nil, err
+	}
+
+	//fmt.Printf("Vishal: barrierUnsealKeys: %#v\n, barrierEncryptedUnsealKeys: %#v\n", barrierUnsealKeys, barrierEncryptedUnsealKeys)
+
+	switch {
+	case barrierEncryptedUnsealKeys != nil:
+		returnedKeys = barrierEncryptedUnsealKeys
+	default:
+		returnedKeys = barrierUnsealKeys
 	}
 
 	// If we are storing shares, pop them out of the returned results and push
@@ -150,8 +170,8 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	if barrierConfig.StoredShares > 0 {
 		var keysToStore [][]byte
 		for i := 0; i < barrierConfig.StoredShares; i++ {
-			keysToStore = append(keysToStore, barrierUnsealKeys[0])
-			barrierUnsealKeys = barrierUnsealKeys[1:]
+			keysToStore = append(keysToStore, returnedKeys[0])
+			returnedKeys = returnedKeys[1:]
 		}
 		if err := c.seal.SetStoredKeys(keysToStore); err != nil {
 			c.logger.Error("core: failed to store keys", "error", err)
@@ -160,7 +180,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	}
 
 	results := &InitResult{
-		SecretShares: barrierUnsealKeys,
+		SecretShares: returnedKeys,
 	}
 
 	// Initialize the barrier
@@ -185,6 +205,39 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 	}()
 
+	// Create metadata for the unseal keys generated
+	unsealMetadata := &unsealMetadataStorageEntry{
+		Data: make(map[string]interface{}),
+	}
+
+	// Associate each unseal key shard with a UUID
+	for _, unsealKeyShard := range barrierUnsealKeys {
+		unsealKeyUUID, err := uuid.GenerateUUID()
+		if err != nil {
+			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
+			return nil, err
+		}
+		unsealMetadata.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = unsealKeyUUID
+	}
+
+	// Persist the unseal metadata
+	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadata)
+	if err != nil {
+		c.logger.Error("core: failed to encode unseal metadata", "error", err)
+		return nil, err
+	}
+
+	fmt.Printf("unsealMetadataJSON: %s\n", unsealMetadataJSON)
+
+	err = c.barrier.Put(&Entry{
+		Key:   coreUnsealMetadataPath,
+		Value: unsealMetadataJSON,
+	})
+	if err != nil {
+		c.logger.Error("core: failed to store unseal metadata", "error", err)
+		return nil, err
+	}
+
 	// Perform initial setup
 	if err := c.setupCluster(); err != nil {
 		c.stateLock.Unlock()
@@ -207,7 +260,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 
 		if recoveryConfig.SecretShares > 0 {
-			recoveryKey, recoveryUnsealKeys, err := c.generateShares(recoveryConfig)
+			recoveryKey, recoveryUnsealKeys, recoveryEncryptedUnsealKeys, err := c.generateShares(recoveryConfig)
 			if err != nil {
 				c.logger.Error("core: failed to generate recovery shares", "error", err)
 				return nil, err
@@ -216,6 +269,13 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 			err = c.seal.SetRecoveryKey(recoveryKey)
 			if err != nil {
 				return nil, err
+			}
+
+			switch {
+			case recoveryEncryptedUnsealKeys != nil:
+				results.RecoveryShares = recoveryEncryptedUnsealKeys
+			default:
+				results.RecoveryShares = recoveryUnsealKeys
 			}
 
 			results.RecoveryShares = recoveryUnsealKeys
