@@ -511,10 +511,10 @@
 			"revisionTime": "2015-05-18T23:42:57Z"
 		},
 		{
-			"checksumSHA1": "jplwF0kQyDhu2Wqq7cmZu0SHjOI=",
+			"checksumSHA1": "4fgV2vzKKVyIlQ9nMyXIP5muq9E=",
 			"path": "github.com/hashicorp/go-multierror",
-			"revision": "8484912a3b9987857bac52e0c5fec2b95f419628",
-			"revisionTime": "2016-11-06T17:22:40Z"
+			"revision": "ed905158d87462226a13fe39ddf685ea65f1c11f",
+			"revisionTime": "2016-12-16T18:43:04Z"
 		},
 		{
 			"checksumSHA1": "ErJHGU6AVPZM9yoY/xV11TwSjQs=",
@@ -529,10 +529,10 @@
 			"revisionTime": "2016-05-03T14:34:40Z"
 		},
 		{
-			"checksumSHA1": "EvoTz48jQ9WHnxZPk6NuaWbd88o=",
+			"checksumSHA1": "pUPzsy2MLooiC5+5Bsjl9j3/qcs=",
 			"path": "github.com/hashicorp/go-syslog",
-			"revision": "315de0c1920b18b942603ffdc2229e2af4803c17",
-			"revisionTime": "2016-08-13T23:57:25Z"
+			"revision": "b609c7d9de4658cded34a7336b90886c56f9dbdb",
+			"revisionTime": "2016-12-13T18:42:51Z"
 		},
 		{
 			"checksumSHA1": "mAkPa/RLuIwN53GbwIEMATexams=",
