@@ -156,8 +156,6 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		return nil, err
 	}
 
-	//fmt.Printf("Vishal: barrierUnsealKeys: %#v\n, barrierEncryptedUnsealKeys: %#v\n", barrierUnsealKeys, barrierEncryptedUnsealKeys)
-
 	switch {
 	case barrierEncryptedUnsealKeys != nil:
 		returnedKeys = barrierEncryptedUnsealKeys
@@ -226,8 +224,6 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		c.logger.Error("core: failed to encode unseal metadata", "error", err)
 		return nil, err
 	}
-
-	fmt.Printf("unsealMetadataJSON: %s\n", unsealMetadataJSON)
 
 	err = c.barrier.Put(&Entry{
 		Key:   coreUnsealMetadataPath,

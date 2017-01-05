@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -337,6 +338,39 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 			return nil, fmt.Errorf("failed to generate shares: %v", err)
 		}
 		results.SecretShares = shares
+	}
+
+	// Create metadata for the unseal keys generated
+	unsealMetadata := &unsealMetadataStorageEntry{
+		Data: make(map[string]interface{}),
+	}
+
+	// Associate each unseal key shard with a UUID
+	for _, unsealKeyShard := range results.SecretShares {
+		unsealKeyUUID, err := uuid.GenerateUUID()
+		if err != nil {
+			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
+			return nil, err
+		}
+		unsealMetadata.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = unsealKeyUUID
+	}
+
+	// Persist the unseal metadata
+	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadata)
+	if err != nil {
+		c.logger.Error("core: failed to encode unseal metadata", "error", err)
+		return nil, err
+	}
+
+	fmt.Printf("unsealMetadataJSON after rekey: %s\n", unsealMetadataJSON)
+
+	err = c.barrier.Put(&Entry{
+		Key:   coreUnsealMetadataPath,
+		Value: unsealMetadataJSON,
+	})
+	if err != nil {
+		c.logger.Error("core: failed to store unseal metadata", "error", err)
+		return nil, err
 	}
 
 	// If we are storing any shares, add them to the shares to store and remove

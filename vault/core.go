@@ -848,11 +848,9 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 		if err = jsonutil.DecodeJSON(entry.Value, &unsealMetadata); err != nil {
 			return false, fmt.Errorf("failed to decode unseal metadata entry: %v", err)
 		}
-		fmt.Printf("unsealMetadata after unseal: %#v\n", unsealMetadata)
 
 		c.logger.Info("core: identifiers of keys that were used to unseal the Vault are:")
 		for _, unlockPart := range c.unlockParts {
-			fmt.Printf("unlockPart: %s\n", base64.StdEncoding.EncodeToString(unlockPart))
 			keyIdentifier, ok := unsealMetadata.Data[base64.StdEncoding.EncodeToString(unlockPart)]
 			if !ok {
 				c.logger.Error("core: unseal key metadata does not contain a matching identifier")
