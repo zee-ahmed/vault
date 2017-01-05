@@ -341,6 +341,7 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		results.SecretShares = shares
 	}
 
+	// Cache the unencrypted key shards to associate metadata to each
 	unsealKeys = results.SecretShares
 
 	if len(c.barrierRekeyConfig.PGPKeys) > 0 {
@@ -391,15 +392,15 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 
 	// Associate each unseal key shard with a UUID
 	for i, unsealKeyShard := range unsealKeys {
-		unsealKeyUUID, err := uuid.GenerateUUID()
-		if err != nil {
-			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
-			return nil, err
-		}
 		metadata := &unsealKeyMetadata{}
 		if results.PGPFingerprints != nil {
 			metadata.PGPFingerprint = results.PGPFingerprints[i]
 		} else {
+			unsealKeyUUID, err := uuid.GenerateUUID()
+			if err != nil {
+				c.logger.Error("core: failed to generate unseal key identifier", "error", err)
+				return nil, err
+			}
 			metadata.ID = unsealKeyUUID
 		}
 		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
@@ -430,6 +431,7 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 			return nil, fmt.Errorf("PGP keys not supported when storing shares")
 		}
 
+		// Note that results.SecretShares will always be unencrypted here
 		for i := 0; i < c.barrierRekeyConfig.StoredShares; i++ {
 			keysToStore = append(keysToStore, results.SecretShares[0])
 			results.SecretShares = results.SecretShares[1:]

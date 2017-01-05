@@ -11,18 +11,25 @@ import (
 	"github.com/hashicorp/vault/shamir"
 )
 
-// unsealMetadataStorageEntry holds metadata about the unseal operation. This
-// informaion is stored during the initialization and is fetched post unseal
-// for auditing purposes.
+// unsealMetadataStorageEntry holds metadata about all the unseal key shards.
+// This informaion is stored during the initialization and is fetched post
+// unseal for logging purposes.
 type unsealMetadataStorageEntry struct {
-	// Data is a map from the unseak key shard to its respective unique
-	// identifier which can be audit logged.
+	// Data is a map from each of the unseal key shard to its respective
+	// identifier. It can either be a UUID or a PGP fingerprint (if PGP keys
+	// were employed to encrypte the shards)
 	Data map[string]*unsealKeyMetadata `json:"data" structs:"data" mapstructure:"data"`
 }
 
-// unsealKeyMetadata holds metadata associated with a specific unseal key shard.
+// unsealKeyMetadata holds metadata associated with each unseal key shard
 type unsealKeyMetadata struct {
-	ID             string `json:"id" structs:"id" mapstructure:"id"`
+	// ID is the UUID associated with the unseal key shard. Either this or
+	// PGPFingerprint will be set, but not both.
+	ID string `json:"id" structs:"id" mapstructure:"id"`
+
+	// PGPFingerprint is the PGP fingerprint of the key used to encrypt the
+	// unseal key shard with. Either this or the ID will be set, but not
+	// both.
 	PGPFingerprint string `json:"pgp_fingerprint" structs:"pgp_fingerprint" mapstructure:"pgp_fingerprint"`
 }
 
@@ -156,33 +163,32 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		return nil, fmt.Errorf("barrier configuration saving failed: %v", err)
 	}
 
-	var returnedKeys [][]byte
 	barrierKey, barrierUnsealKeys, barrierEncryptedUnsealKeys, barrierPGPFingerprints, err := c.generateShares(barrierConfig)
 	if err != nil {
 		c.logger.Error("core: error generating shares", "error", err)
 		return nil, err
 	}
 
-	// Create metadata for the unseal keys generated using the unseal shards
-	// created. But persist the metadata after the barrier is unsealed. Note
-	// that the creation of metadata is performed before stored shares are
-	// processed. This is done to ensure that the metadata contains entries for
-	// all the unseal key shards.
+	// Prepare metadata for each of the unseal key shards generated. Associate
+	// the metatada with plaintext unseal key shards and not the PGP encrypted
+	// key shards. Metadata should be created for all the key shards and hence
+	// this should be done before processing stored keys.
 	unsealMetadataEntry := &unsealMetadataStorageEntry{
 		Data: make(map[string]*unsealKeyMetadata),
 	}
 
-	// Associate each unseal key shard with a UUID
+	// Depending on whether PGP keys are employed or not, associate either a
+	// UUID or the PGP fingerprint with the unseal key shards.
 	for i, unsealKeyShard := range barrierUnsealKeys {
-		unsealKeyUUID, err := uuid.GenerateUUID()
-		if err != nil {
-			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
-			return nil, err
-		}
 		metadata := &unsealKeyMetadata{}
 		if barrierEncryptedUnsealKeys != nil {
 			metadata.PGPFingerprint = barrierPGPFingerprints[i]
 		} else {
+			unsealKeyUUID, err := uuid.GenerateUUID()
+			if err != nil {
+				c.logger.Error("core: failed to generate unseal key identifier", "error", err)
+				return nil, err
+			}
 			metadata.ID = unsealKeyUUID
 		}
 		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
@@ -195,6 +201,9 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		return nil, err
 	}
 
+	// Determine whether to return plaintext unseal key shards or its PGP
+	// encrypted counterparts
+	var returnedKeys [][]byte
 	switch {
 	case barrierEncryptedUnsealKeys != nil:
 		returnedKeys = barrierEncryptedUnsealKeys
@@ -210,6 +219,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 			return nil, fmt.Errorf("PGP keys not supported when storing shares")
 		}
 
+		// Note that returnedKeys will always be unencrypted here
 		var keysToStore [][]byte
 		for i := 0; i < barrierConfig.StoredShares; i++ {
 			keysToStore = append(keysToStore, returnedKeys[0])
@@ -247,7 +257,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 	}()
 
-	// Persist the unseal metadata
+	// Now that the barrier is unsealed, persist the unseal metadata
 	err = c.barrier.Put(&Entry{
 		Key:   coreUnsealMetadataPath,
 		Value: unsealMetadataJSON,

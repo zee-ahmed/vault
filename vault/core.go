@@ -58,8 +58,8 @@ const (
 	// of orphaned leader keys, to prevent slamming the backend.
 	leaderPrefixCleanDelay = 200 * time.Millisecond
 
-	// barrierMetadataPath is the path used to store the metadata about the
-	// unseal operation
+	// coreUnsealMetadataPath is the path used to store the metadata about
+	// unseal key shards.
 	coreUnsealMetadataPath = "core/unseal_metadata"
 )
 
@@ -817,10 +817,8 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 	var masterKey []byte
 	if config.SecretThreshold == 1 {
 		masterKey = c.unlockParts[0]
-		//c.unlockParts = nil
 	} else {
 		masterKey, err = shamir.Combine(c.unlockParts)
-		//c.unlockParts = nil
 		if err != nil {
 			return false, fmt.Errorf("failed to compute master key: %v", err)
 		}
@@ -835,6 +833,7 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 		c.logger.Info("core: vault is unsealed")
 	}
 
+	// Fetch the metadata associated with the unseal keys
 	entry, err := c.barrier.Get(coreUnsealMetadataPath)
 	if err != nil {
 		return false, fmt.Errorf("failed to fetch unseal metadata entry: %v", err)
@@ -849,25 +848,32 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 			return false, fmt.Errorf("failed to decode unseal metadata entry: %v", err)
 		}
 
-		c.logger.Info("core: identifiers of keys that were used to unseal the Vault are:")
 		for _, unlockPart := range c.unlockParts {
+			// Fetch the metadata associated to the unseal key shard
 			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unlockPart)]
+
+			// If the storage entry is successfully read, metadata associated
+			// with all the unseal keys must be available.
 			if !ok || keyMetadata == nil {
 				c.logger.Error("core: failed to fetch unseal key metadata")
-				return false, fmt.Errorf("core: failed to fetch unseal key metadata")
+				return false, fmt.Errorf("failed to fetch unseal key metadata")
 			}
+
+			// Unseal key shards are identified either by UUIDs or by PGP
+			// fingerprints (when PGP keys are used to encrypt the key shards).
 			switch {
 			case keyMetadata.ID != "":
-				c.logger.Info(fmt.Sprintf("ID: %s\n", keyMetadata.ID))
+				c.logger.Info(fmt.Sprintf("unseal key with identifier %q supplied", keyMetadata.ID))
 			case keyMetadata.PGPFingerprint != "":
-				c.logger.Info(fmt.Sprintf("PGPFingerprint: %s\n", keyMetadata.PGPFingerprint))
+				c.logger.Info(fmt.Sprintf("unseal key with PGP fingerprint %q supplied", keyMetadata.PGPFingerprint))
 			default:
-				c.logger.Error("core: invalid unseal metadata")
-				return false, fmt.Errorf("core: invalid unseal metadata")
+				c.logger.Error("core: missing unseal key shard metadata")
+				return false, fmt.Errorf("missing unseal key shard metadata")
 			}
 		}
 	}
 
+	// Mark unlockParts to be garbage collected
 	if c.unlockParts != nil {
 		c.unlockParts = nil
 	}
