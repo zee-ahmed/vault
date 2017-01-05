@@ -340,16 +340,6 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		results.SecretShares = shares
 	}
 
-	// If we are storing any shares, add them to the shares to store and remove
-	// from the returned keys
-	var keysToStore [][]byte
-	if c.barrierRekeyConfig.StoredShares > 0 {
-		for i := 0; i < c.barrierRekeyConfig.StoredShares; i++ {
-			keysToStore = append(keysToStore, results.SecretShares[0])
-			results.SecretShares = results.SecretShares[1:]
-		}
-	}
-
 	if len(c.barrierRekeyConfig.PGPKeys) > 0 {
 		hexEncodedShares := make([][]byte, len(results.SecretShares))
 		for i, _ := range results.SecretShares {
@@ -428,7 +418,20 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		return nil, err
 	}
 
-	if keysToStore != nil {
+	// If we are storing any shares, add them to the shares to store and remove
+	// from the returned keys
+	var keysToStore [][]byte
+	if c.barrierRekeyConfig.StoredShares > 0 {
+		if len(c.barrierRekeyConfig.PGPKeys) > 0 {
+			c.logger.Error("core: PGP keys not supported when storing shares")
+			return nil, fmt.Errorf("PGP keys not supported when storing shares")
+		}
+
+		for i := 0; i < c.barrierRekeyConfig.StoredShares; i++ {
+			keysToStore = append(keysToStore, results.SecretShares[0])
+			results.SecretShares = results.SecretShares[1:]
+		}
+
 		if err := c.seal.SetStoredKeys(keysToStore); err != nil {
 			c.logger.Error("core: failed to store keys", "error", err)
 			return nil, fmt.Errorf("failed to store keys: %v", err)

@@ -163,6 +163,38 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		return nil, err
 	}
 
+	// Create metadata for the unseal keys generated using the unseal shards
+	// created. But persist the metadata after the barrier is unsealed. Note
+	// that the creation of metadata is performed before stored shares are
+	// processed. This is done to ensure that the metadata contains entries for
+	// all the unseal key shards.
+	unsealMetadataEntry := &unsealMetadataStorageEntry{
+		Data: make(map[string]*unsealKeyMetadata),
+	}
+
+	// Associate each unseal key shard with a UUID
+	for i, unsealKeyShard := range barrierUnsealKeys {
+		unsealKeyUUID, err := uuid.GenerateUUID()
+		if err != nil {
+			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
+			return nil, err
+		}
+		metadata := &unsealKeyMetadata{}
+		if barrierEncryptedUnsealKeys != nil {
+			metadata.PGPFingerprint = barrierPGPFingerprints[i]
+		} else {
+			metadata.ID = unsealKeyUUID
+		}
+		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
+	}
+
+	// JSON encode the unseal keys matadata
+	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadataEntry)
+	if err != nil {
+		c.logger.Error("core: failed to encode unseal metadata", "error", err)
+		return nil, err
+	}
+
 	switch {
 	case barrierEncryptedUnsealKeys != nil:
 		returnedKeys = barrierEncryptedUnsealKeys
@@ -173,6 +205,11 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	// If we are storing shares, pop them out of the returned results and push
 	// them through the seal
 	if barrierConfig.StoredShares > 0 {
+		if len(barrierConfig.PGPKeys) > 0 {
+			c.logger.Error("core: PGP keys not supported when storing shares")
+			return nil, fmt.Errorf("PGP keys not supported when storing shares")
+		}
+
 		var keysToStore [][]byte
 		for i := 0; i < barrierConfig.StoredShares; i++ {
 			keysToStore = append(keysToStore, returnedKeys[0])
@@ -210,34 +247,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 	}()
 
-	// Create metadata for the unseal keys generated
-	unsealMetadataEntry := &unsealMetadataStorageEntry{
-		Data: make(map[string]*unsealKeyMetadata),
-	}
-
-	// Associate each unseal key shard with a UUID
-	for i, unsealKeyShard := range barrierUnsealKeys {
-		unsealKeyUUID, err := uuid.GenerateUUID()
-		if err != nil {
-			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
-			return nil, err
-		}
-		metadata := &unsealKeyMetadata{}
-		if barrierEncryptedUnsealKeys != nil {
-			metadata.PGPFingerprint = barrierPGPFingerprints[i]
-		} else {
-			metadata.ID = unsealKeyUUID
-		}
-		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
-	}
-
 	// Persist the unseal metadata
-	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadataEntry)
-	if err != nil {
-		c.logger.Error("core: failed to encode unseal metadata", "error", err)
-		return nil, err
-	}
-
 	err = c.barrier.Put(&Entry{
 		Key:   coreUnsealMetadataPath,
 		Value: unsealMetadataJSON,
