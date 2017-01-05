@@ -328,6 +328,7 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		Backup: c.barrierRekeyConfig.Backup,
 	}
 
+	var unsealKeys [][]byte
 	if c.barrierRekeyConfig.SecretShares == 1 {
 		results.SecretShares = append(results.SecretShares, newMasterKey)
 	} else {
@@ -339,6 +340,8 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		}
 		results.SecretShares = shares
 	}
+
+	unsealKeys = results.SecretShares
 
 	if len(c.barrierRekeyConfig.PGPKeys) > 0 {
 		hexEncodedShares := make([][]byte, len(results.SecretShares))
@@ -387,7 +390,7 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 	}
 
 	// Associate each unseal key shard with a UUID
-	for i, unsealKeyShard := range results.SecretShares {
+	for i, unsealKeyShard := range unsealKeys {
 		unsealKeyUUID, err := uuid.GenerateUUID()
 		if err != nil {
 			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
