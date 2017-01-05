@@ -340,39 +340,6 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		results.SecretShares = shares
 	}
 
-	// Create metadata for the unseal keys generated
-	unsealMetadata := &unsealMetadataStorageEntry{
-		Data: make(map[string]interface{}),
-	}
-
-	// Associate each unseal key shard with a UUID
-	for _, unsealKeyShard := range results.SecretShares {
-		unsealKeyUUID, err := uuid.GenerateUUID()
-		if err != nil {
-			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
-			return nil, err
-		}
-		unsealMetadata.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = unsealKeyUUID
-	}
-
-	// Persist the unseal metadata
-	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadata)
-	if err != nil {
-		c.logger.Error("core: failed to encode unseal metadata", "error", err)
-		return nil, err
-	}
-
-	fmt.Printf("unsealMetadataJSON after rekey: %s\n", unsealMetadataJSON)
-
-	err = c.barrier.Put(&Entry{
-		Key:   coreUnsealMetadataPath,
-		Value: unsealMetadataJSON,
-	})
-	if err != nil {
-		c.logger.Error("core: failed to store unseal metadata", "error", err)
-		return nil, err
-	}
-
 	// If we are storing any shares, add them to the shares to store and remove
 	// from the returned keys
 	var keysToStore [][]byte
@@ -422,6 +389,43 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 				return nil, fmt.Errorf("failed to save unseal key backup: %v", err)
 			}
 		}
+	}
+
+	// Create metadata for the unseal keys generated
+	unsealMetadataEntry := &unsealMetadataStorageEntry{
+		Data: make(map[string]*unsealKeyMetadata),
+	}
+
+	// Associate each unseal key shard with a UUID
+	for i, unsealKeyShard := range results.SecretShares {
+		unsealKeyUUID, err := uuid.GenerateUUID()
+		if err != nil {
+			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
+			return nil, err
+		}
+		metadata := &unsealKeyMetadata{}
+		if results.PGPFingerprints != nil {
+			metadata.PGPFingerprint = results.PGPFingerprints[i]
+		} else {
+			metadata.ID = unsealKeyUUID
+		}
+		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
+	}
+
+	// Persist the unseal metadata
+	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadataEntry)
+	if err != nil {
+		c.logger.Error("core: failed to encode unseal metadata", "error", err)
+		return nil, err
+	}
+
+	err = c.barrier.Put(&Entry{
+		Key:   coreUnsealMetadataPath,
+		Value: unsealMetadataJSON,
+	})
+	if err != nil {
+		c.logger.Error("core: failed to store unseal metadata", "error", err)
+		return nil, err
 	}
 
 	if keysToStore != nil {

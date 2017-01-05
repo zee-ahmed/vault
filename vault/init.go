@@ -17,7 +17,13 @@ import (
 type unsealMetadataStorageEntry struct {
 	// Data is a map from the unseak key shard to its respective unique
 	// identifier which can be audit logged.
-	Data map[string]interface{} `json:"data" structs:"data" mapstructure:"data"`
+	Data map[string]*unsealKeyMetadata `json:"data" structs:"data" mapstructure:"data"`
+}
+
+// unsealKeyMetadata holds metadata associated with a specific unseal key shard.
+type unsealKeyMetadata struct {
+	ID             string `json:"id" structs:"id" mapstructure:"id"`
+	PGPFingerprint string `json:"pgp_fingerprint" structs:"pgp_fingerprint" mapstructure:"pgp_fingerprint"`
 }
 
 // InitParams keeps the init function from being littered with too many
@@ -61,11 +67,11 @@ func (c *Core) Initialized() (bool, error) {
 	return true, nil
 }
 
-func (c *Core) generateShares(sc *SealConfig) ([]byte, [][]byte, [][]byte, error) {
+func (c *Core) generateShares(sc *SealConfig) ([]byte, [][]byte, [][]byte, []string, error) {
 	// Generate a master key
 	masterKeyBytes, err := c.barrier.GenerateKey()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("key generation failed: %v", err)
+		return nil, nil, nil, nil, fmt.Errorf("key generation failed: %v", err)
 	}
 
 	// Return the master key if only a single key part is used
@@ -76,24 +82,25 @@ func (c *Core) generateShares(sc *SealConfig) ([]byte, [][]byte, [][]byte, error
 		// Split the master key using the Shamir algorithm
 		unsealKeys, err = shamir.Split(masterKeyBytes, sc.SecretShares, sc.SecretThreshold)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to generate barrier shares: %v", err)
+			return nil, nil, nil, nil, fmt.Errorf("failed to generate barrier shares: %v", err)
 		}
 	}
 
 	// If we have PGP keys, perform the encryption
 	var encryptedUnsealKeys [][]byte
+	var pgpFingerprints []string
 	if len(sc.PGPKeys) > 0 {
 		hexEncodedShares := make([][]byte, len(unsealKeys))
 		for i, _ := range unsealKeys {
 			hexEncodedShares[i] = []byte(hex.EncodeToString(unsealKeys[i]))
 		}
-		_, encryptedUnsealKeys, err = pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
+		pgpFingerprints, encryptedUnsealKeys, err = pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 	}
 
-	return masterKeyBytes, unsealKeys, encryptedUnsealKeys, nil
+	return masterKeyBytes, unsealKeys, encryptedUnsealKeys, pgpFingerprints, nil
 }
 
 // Initialize is used to initialize the Vault with the given
@@ -150,7 +157,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	}
 
 	var returnedKeys [][]byte
-	barrierKey, barrierUnsealKeys, barrierEncryptedUnsealKeys, err := c.generateShares(barrierConfig)
+	barrierKey, barrierUnsealKeys, barrierEncryptedUnsealKeys, barrierPGPFingerprints, err := c.generateShares(barrierConfig)
 	if err != nil {
 		c.logger.Error("core: error generating shares", "error", err)
 		return nil, err
@@ -204,22 +211,28 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	}()
 
 	// Create metadata for the unseal keys generated
-	unsealMetadata := &unsealMetadataStorageEntry{
-		Data: make(map[string]interface{}),
+	unsealMetadataEntry := &unsealMetadataStorageEntry{
+		Data: make(map[string]*unsealKeyMetadata),
 	}
 
 	// Associate each unseal key shard with a UUID
-	for _, unsealKeyShard := range barrierUnsealKeys {
+	for i, unsealKeyShard := range barrierUnsealKeys {
 		unsealKeyUUID, err := uuid.GenerateUUID()
 		if err != nil {
 			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
 			return nil, err
 		}
-		unsealMetadata.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = unsealKeyUUID
+		metadata := &unsealKeyMetadata{}
+		if barrierEncryptedUnsealKeys != nil {
+			metadata.PGPFingerprint = barrierPGPFingerprints[i]
+		} else {
+			metadata.ID = unsealKeyUUID
+		}
+		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
 	}
 
 	// Persist the unseal metadata
-	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadata)
+	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadataEntry)
 	if err != nil {
 		c.logger.Error("core: failed to encode unseal metadata", "error", err)
 		return nil, err
@@ -256,7 +269,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 
 		if recoveryConfig.SecretShares > 0 {
-			recoveryKey, recoveryUnsealKeys, recoveryEncryptedUnsealKeys, err := c.generateShares(recoveryConfig)
+			recoveryKey, recoveryUnsealKeys, recoveryEncryptedUnsealKeys, _, err := c.generateShares(recoveryConfig)
 			if err != nil {
 				c.logger.Error("core: failed to generate recovery shares", "error", err)
 				return nil, err

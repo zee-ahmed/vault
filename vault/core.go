@@ -842,21 +842,29 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 
 	// For BC compatibility, log the metadata information only if it is
 	// available
-	var unsealMetadata unsealMetadataStorageEntry
+	var unsealMetadataEntry unsealMetadataStorageEntry
 	if entry != nil {
 		// Decode the unseal metadata information
-		if err = jsonutil.DecodeJSON(entry.Value, &unsealMetadata); err != nil {
+		if err = jsonutil.DecodeJSON(entry.Value, &unsealMetadataEntry); err != nil {
 			return false, fmt.Errorf("failed to decode unseal metadata entry: %v", err)
 		}
 
 		c.logger.Info("core: identifiers of keys that were used to unseal the Vault are:")
 		for _, unlockPart := range c.unlockParts {
-			keyIdentifier, ok := unsealMetadata.Data[base64.StdEncoding.EncodeToString(unlockPart)]
-			if !ok {
-				c.logger.Error("core: unseal key metadata does not contain a matching identifier")
-				return false, fmt.Errorf("core: unseal key metadata does not contain a matching identifier")
+			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unlockPart)]
+			if !ok || keyMetadata == nil {
+				c.logger.Error("core: failed to fetch unseal key metadata")
+				return false, fmt.Errorf("core: failed to fetch unseal key metadata")
 			}
-			c.logger.Info(fmt.Sprintf("%s\n", keyIdentifier))
+			switch {
+			case keyMetadata.ID != "":
+				c.logger.Info(fmt.Sprintf("ID: %s\n", keyMetadata.ID))
+			case keyMetadata.PGPFingerprint != "":
+				c.logger.Info(fmt.Sprintf("PGPFingerprint: %s\n", keyMetadata.PGPFingerprint))
+			default:
+				c.logger.Error("core: invalid unseal metadata")
+				return false, fmt.Errorf("core: invalid unseal metadata")
+			}
 		}
 	}
 
