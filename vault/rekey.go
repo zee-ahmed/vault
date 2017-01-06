@@ -2,7 +2,6 @@ package vault
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -385,32 +384,11 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		}
 	}
 
-	// Create metadata for the unseal keys generated
-	unsealMetadataEntry := &unsealMetadataStorageEntry{
-		Data: make(map[string]*unsealKeyMetadata),
-	}
-
-	// Associate each unseal key shard with a UUID
-	for i, unsealKeyShard := range unsealKeys {
-		metadata := &unsealKeyMetadata{}
-		if results.PGPFingerprints != nil {
-			metadata.PGPFingerprint = results.PGPFingerprints[i]
-		} else {
-			unsealKeyUUID, err := uuid.GenerateUUID()
-			if err != nil {
-				c.logger.Error("core: failed to generate unseal key identifier", "error", err)
-				return nil, err
-			}
-			metadata.ID = unsealKeyUUID
-		}
-		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
-	}
-
-	// Persist the unseal metadata
-	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadataEntry)
+	// Associate metadata for all the unseal key shards
+	unsealMetadataJSON, err := c.prepareUnsealKeyShardsMetadata(unsealKeys, results.PGPFingerprints)
 	if err != nil {
-		c.logger.Error("core: failed to encode unseal metadata", "error", err)
-		return nil, err
+		c.logger.Error("core: failed to prepare unseal key shards metadata during rekey", "error", err)
+		return nil, fmt.Errorf("failed to prepare unseal key shards metadata during rekey")
 	}
 
 	err = c.barrier.Put(&Entry{
