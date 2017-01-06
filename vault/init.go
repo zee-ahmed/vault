@@ -36,10 +36,9 @@ type UnsealKeyMetadata struct {
 // InitParams keeps the init function from being littered with too many
 // params, that's it!
 type InitParams struct {
-	BarrierConfig        *SealConfig
-	RecoveryConfig       *SealConfig
-	RootTokenPGPKey      string
-	EnableKeyIdentifiers bool
+	BarrierConfig   *SealConfig
+	RecoveryConfig  *SealConfig
+	RootTokenPGPKey string
 }
 
 // InitResult is used to provide the key parts back after
@@ -234,21 +233,20 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 
 	var unsealMetadataJSON []byte
 
-	if initParams.EnableKeyIdentifiers {
-		//
-		// Prepare metadata for each of the unseal key shards generated. Associate
-		// the metatada with plaintext unseal key shards and not the PGP encrypted
-		// key shards. Metadata should be created for all the key shards and hence
-		// this should be done before processing stored keys.
-		//
+	//
+	// Prepare metadata for each of the unseal key shards generated. Associate
+	// the metatada with plaintext unseal key shards and not the PGP encrypted
+	// key shards. Metadata should be created for all the key shards and hence
+	// this should be done before processing stored keys.
+	//
 
-		// Associate metadata for all the unseal key shards
-		unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints)
-		if err != nil {
-			c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
-			return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
-		}
+	// Associate metadata for all the unseal key shards
+	unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints)
+	if err != nil {
+		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
+		return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
 	}
+
 	// Determine whether to return plaintext unseal key shards or its PGP
 	// encrypted counterparts
 	var returnedKeys [][]byte
@@ -303,16 +301,14 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 	}()
 
-	if initParams.EnableKeyIdentifiers {
-		// Now that the barrier is unsealed, persist the unseal metadata
-		err = c.barrier.Put(&Entry{
-			Key:   coreUnsealMetadataPath,
-			Value: unsealMetadataJSON,
-		})
-		if err != nil {
-			c.logger.Error("core: failed to store unseal metadata", "error", err)
-			return nil, err
-		}
+	// Now that the barrier is unsealed, persist the unseal metadata
+	err = c.barrier.Put(&Entry{
+		Key:   coreUnsealMetadataPath,
+		Value: unsealMetadataJSON,
+	})
+	if err != nil {
+		c.logger.Error("core: failed to store unseal metadata", "error", err)
+		return nil, err
 	}
 
 	// Perform initial setup

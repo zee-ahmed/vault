@@ -863,9 +863,9 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 			// fingerprints (when PGP keys are used to encrypt the key shards).
 			switch {
 			case keyMetadata.ID != "":
-				c.logger.Info(fmt.Sprintf("unseal key with identifier %q supplied", keyMetadata.ID))
+				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied", keyMetadata.ID))
 			case keyMetadata.PGPFingerprint != "":
-				c.logger.Info(fmt.Sprintf("unseal key with PGP fingerprint %q supplied", keyMetadata.PGPFingerprint))
+				c.logger.Info(fmt.Sprintf("core: unseal key with PGP fingerprint %q supplied", keyMetadata.PGPFingerprint))
 			default:
 				c.logger.Error("core: missing unseal key shard metadata")
 				return false, fmt.Errorf("missing unseal key shard metadata")

@@ -82,10 +82,9 @@ func handleSysInitPut(core *vault.Core, w http.ResponseWriter, r *http.Request) 
 	}
 
 	initParams := &vault.InitParams{
-		BarrierConfig:        barrierConfig,
-		RecoveryConfig:       recoveryConfig,
-		RootTokenPGPKey:      req.RootTokenPGPKey,
-		EnableKeyIdentifiers: req.EnableKeyIdentifiers,
+		BarrierConfig:   barrierConfig,
+		RecoveryConfig:  recoveryConfig,
+		RootTokenPGPKey: req.RootTokenPGPKey,
 	}
 
 	result, initErr := core.Initialize(initParams)
@@ -138,15 +137,14 @@ func handleSysInitPut(core *vault.Core, w http.ResponseWriter, r *http.Request) 
 }
 
 type InitRequest struct {
-	SecretShares         int      `json:"secret_shares"`
-	SecretThreshold      int      `json:"secret_threshold"`
-	StoredShares         int      `json:"stored_shares"`
-	EnableKeyIdentifiers bool     `json:"enable_key_identifiers"`
-	PGPKeys              []string `json:"pgp_keys"`
-	RecoveryShares       int      `json:"recovery_shares"`
-	RecoveryThreshold    int      `json:"recovery_threshold"`
-	RecoveryPGPKeys      []string `json:"recovery_pgp_keys"`
-	RootTokenPGPKey      string   `json:"root_token_pgp_key"`
+	SecretShares      int      `json:"secret_shares"`
+	SecretThreshold   int      `json:"secret_threshold"`
+	StoredShares      int      `json:"stored_shares"`
+	PGPKeys           []string `json:"pgp_keys"`
+	RecoveryShares    int      `json:"recovery_shares"`
+	RecoveryThreshold int      `json:"recovery_threshold"`
+	RecoveryPGPKeys   []string `json:"recovery_pgp_keys"`
+	RootTokenPGPKey   string   `json:"root_token_pgp_key"`
 }
 
 type InitResponse struct {
