@@ -23,7 +23,7 @@ func (c *InitCommand) Run(args []string) int {
 	var threshold, shares, storedShares, recoveryThreshold, recoveryShares int
 	var pgpKeys, recoveryPgpKeys, rootTokenPgpKey pgpkeys.PubKeyFilesFlag
 	var auto, check bool
-	var consulServiceName string
+	var consulServiceName, keyIdentifierNames string
 	flags := c.Meta.FlagSet("init", meta.FlagSetDefault)
 	flags.Usage = func() { c.Ui.Error(c.Help()) }
 	flags.IntVar(&shares, "key-shares", 5, "")
@@ -37,18 +37,20 @@ func (c *InitCommand) Run(args []string) int {
 	flags.BoolVar(&check, "check", false, "")
 	flags.BoolVar(&auto, "auto", false, "")
 	flags.StringVar(&consulServiceName, "consul-service", physical.DefaultServiceName, "")
+	flags.StringVar(&keyIdentifierNames, "key-identifier-names", "", "")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
 
 	initRequest := &api.InitRequest{
-		SecretShares:      shares,
-		SecretThreshold:   threshold,
-		StoredShares:      storedShares,
-		PGPKeys:           pgpKeys,
-		RecoveryShares:    recoveryShares,
-		RecoveryThreshold: recoveryThreshold,
-		RecoveryPGPKeys:   recoveryPgpKeys,
+		SecretShares:       shares,
+		SecretThreshold:    threshold,
+		StoredShares:       storedShares,
+		PGPKeys:            pgpKeys,
+		RecoveryShares:     recoveryShares,
+		RecoveryThreshold:  recoveryThreshold,
+		RecoveryPGPKeys:    recoveryPgpKeys,
+		KeyIdentifierNames: keyIdentifierNames,
 	}
 
 	switch len(rootTokenPgpKey) {
@@ -240,8 +242,12 @@ func (c *InitCommand) runInit(check bool, initRequest *api.InitRequest) int {
 
 		for i, keyMetadata := range resp.KeysMetadata {
 			switch {
+			case keyMetadata.ID != "" && keyMetadata.Name != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d with name %q: %s", i+1, keyMetadata.Name, keyMetadata.ID))
 			case keyMetadata.ID != "":
 				c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d: %s", i+1, keyMetadata.ID))
+			case keyMetadata.PGPFingerprint != "" && keyMetadata.Name != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key PGP Key Fingerprint %d with name %q: %s", i+1, keyMetadata.Name, keyMetadata.PGPFingerprint))
 			case keyMetadata.PGPFingerprint != "":
 				c.Ui.Output(fmt.Sprintf("Unseal Key PGP Key Fingerprint %d: %s", i+1, keyMetadata.PGPFingerprint))
 			default:
@@ -341,6 +347,11 @@ Init Options:
 
   -key-threshold=3          The number of key shares required to reconstruct
                             the master key.
+
+  -key-identifier-names     If provided, must be a comma-separated list of names
+                            to be associated with the unseal key identifiers. The
+                            number of unique names supplied should match the value
+                            of 'key-threshold'.
 
   -stored-shares=0          The number of unseal keys to store. Only used with 
                             Vault HSM. Must currently be equivalent to the

@@ -169,10 +169,11 @@ func (c *Sys) RekeyDeleteRecoveryBackup() error {
 }
 
 type RekeyInitRequest struct {
-	SecretShares    int      `json:"secret_shares"`
-	SecretThreshold int      `json:"secret_threshold"`
-	PGPKeys         []string `json:"pgp_keys"`
-	Backup          bool
+	SecretShares       int      `json:"secret_shares"`
+	SecretThreshold    int      `json:"secret_threshold"`
+	PGPKeys            []string `json:"pgp_keys"`
+	Backup             bool
+	KeyIdentifierNames string `json:"key_identifier_names"`
 }
 
 type RekeyStatusResponse struct {

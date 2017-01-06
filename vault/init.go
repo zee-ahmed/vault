@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/pgpkeys"
 	"github.com/hashicorp/vault/helper/salt"
+	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/shamir"
 )
 
@@ -24,6 +25,10 @@ type unsealMetadataStorageEntry struct {
 
 // UnsealKeyMetadata holds metadata associated with each unseal key shard
 type UnsealKeyMetadata struct {
+	// Name is a human readable name optionally provided by the caller to be
+	// associated with the identifier of the unseal key.
+	Name string `json:"name" structs:"name" mapstructure:"name"`
+
 	// ID is the UUID associated with the unseal key shard. Either this or
 	// PGPFingerprint will be set, but not both.
 	ID string `json:"id" structs:"id" mapstructure:"id"`
@@ -136,7 +141,19 @@ func (c *Core) generateShares(sc *SealConfig) (*GenerateSharesResult, error) {
 // Identifier for unencrypted key shards will be UUIDs and PGP key fingerprints
 // for encrypted key shards. At least for now, either all the keys will be
 // encrypted or they will be unencrypted, but this function is generic.
-func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKeysPGPFingerprints []string) ([]byte, []*UnsealKeyMetadata, error) {
+func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKeysPGPFingerprints []string, keyIdentifierNames string) ([]byte, []*UnsealKeyMetadata, error) {
+
+	// If keyIdentifierNames are supplied, parse them
+	var identifierNames []string
+	if keyIdentifierNames != "" {
+		identifierNames = strutil.ParseDedupAndSortStrings(keyIdentifierNames, ",")
+
+		if len(identifierNames) != len(unsealKeyShares) {
+			c.logger.Error("core: number of key identifier names not matching the number of key shares")
+			return nil, nil, fmt.Errorf("number of key identifier names not matching the number of key shares")
+		}
+	}
+
 	unsealMetadataEntry := &unsealMetadataStorageEntry{
 		Data: make(map[string]*UnsealKeyMetadata),
 	}
@@ -157,6 +174,12 @@ func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKe
 			}
 			metadata.ID = unsealKeyUUID
 		}
+
+		// Attach the name for the identifier if supplied
+		if len(identifierNames) > 0 {
+			metadata.Name = identifierNames[i]
+		}
+
 		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unsealKeyShard))] = metadata
 		keysMetadata = append(keysMetadata, metadata)
 	}
@@ -242,7 +265,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	//
 
 	// Associate metadata for all the unseal key shards
-	unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints)
+	unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints, barrierConfig.KeyIdentifierNames)
 	if err != nil {
 		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
 		return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
