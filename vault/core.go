@@ -28,6 +28,7 @@ import (
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/logformat"
 	"github.com/hashicorp/vault/helper/mlock"
+	"github.com/hashicorp/vault/helper/salt"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/physical"
 	"github.com/hashicorp/vault/shamir"
@@ -850,7 +851,7 @@ func (c *Core) Unseal(key []byte) (bool, error) {
 
 		for _, unlockPart := range c.unlockParts {
 			// Fetch the metadata associated to the unseal key shard
-			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unlockPart)]
+			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unlockPart))]
 
 			// If the storage entry is successfully read, metadata associated
 			// with all the unseal keys must be available.

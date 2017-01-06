@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/pgpkeys"
+	"github.com/hashicorp/vault/helper/salt"
 	"github.com/hashicorp/vault/shamir"
 )
 
@@ -156,7 +157,7 @@ func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKe
 			}
 			metadata.ID = unsealKeyUUID
 		}
-		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
+		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unsealKeyShard))] = metadata
 		keysMetadata = append(keysMetadata, metadata)
 	}
 
