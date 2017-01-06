@@ -49,6 +49,17 @@ type InitResult struct {
 	RootToken      string
 }
 
+// GenerateSharesResult is used to provide the master key and its unseal key
+// shards. If PGP keys are used to encrypt the key shards this will also hold
+// the encrypted key shards and the PGP key fingerprint of the respective key
+// that encrypted each shard.
+type GenerateSharesResult struct {
+	Key                   []byte
+	KeyShards             [][]byte
+	PGPKeyFingerprints    []string
+	PGPEncryptedKeyShards [][]byte
+}
+
 // Initialized checks if the Vault is already initialized
 func (c *Core) Initialized() (bool, error) {
 	// Check the barrier first
@@ -74,40 +85,48 @@ func (c *Core) Initialized() (bool, error) {
 	return true, nil
 }
 
-func (c *Core) generateShares(sc *SealConfig) ([]byte, [][]byte, [][]byte, []string, error) {
-	// Generate a master key
-	masterKeyBytes, err := c.barrier.GenerateKey()
+// generateShares takes in a seal configuration and creates a barrier key. The
+// key will then be split into the specified number of shares. If PGP keys are
+// supplied, each key shard will be encrypted with respective PGP keys.
+func (c *Core) generateShares(sc *SealConfig) (*GenerateSharesResult, error) {
+	// Generate a barrier key
+	keyBytes, err := c.barrier.GenerateKey()
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("key generation failed: %v", err)
+		return nil, fmt.Errorf("key generation failed: %v", err)
 	}
 
-	// Return the master key if only a single key part is used
-	var unsealKeys [][]byte
+	// Return the barrier key if only a single key part is used
+	var keyShards [][]byte
 	if sc.SecretShares == 1 {
-		unsealKeys = append(unsealKeys, masterKeyBytes)
+		keyShards = append(keyShards, keyBytes)
 	} else {
 		// Split the master key using the Shamir algorithm
-		unsealKeys, err = shamir.Split(masterKeyBytes, sc.SecretShares, sc.SecretThreshold)
+		keyShards, err = shamir.Split(keyBytes, sc.SecretShares, sc.SecretThreshold)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("failed to generate barrier shares: %v", err)
+			return nil, fmt.Errorf("failed to generate barrier shares: %v", err)
 		}
 	}
 
-	// If we have PGP keys, perform the encryption
-	var encryptedUnsealKeys [][]byte
-	var pgpFingerprints []string
+	// If PGP keys are supplied, encrypt the key shards with respective PGP key
+	var pgpEncryptedKeyShards [][]byte
+	var pgpKeyFingerprints []string
 	if len(sc.PGPKeys) > 0 {
-		hexEncodedShares := make([][]byte, len(unsealKeys))
-		for i, _ := range unsealKeys {
-			hexEncodedShares[i] = []byte(hex.EncodeToString(unsealKeys[i]))
+		hexEncodedShares := make([][]byte, len(keyShards))
+		for i, _ := range keyShards {
+			hexEncodedShares[i] = []byte(hex.EncodeToString(keyShards[i]))
 		}
-		pgpFingerprints, encryptedUnsealKeys, err = pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
+		pgpKeyFingerprints, pgpEncryptedKeyShards, err = pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, err
 		}
 	}
 
-	return masterKeyBytes, unsealKeys, encryptedUnsealKeys, pgpFingerprints, nil
+	return &GenerateSharesResult{
+		Key:                   keyBytes,
+		KeyShards:             keyShards,
+		PGPKeyFingerprints:    pgpKeyFingerprints,
+		PGPEncryptedKeyShards: pgpEncryptedKeyShards,
+	}, nil
 }
 
 // prepareUnsealKeyShardsMetadata takes in the unseal key shards, both encrypted and
@@ -200,32 +219,33 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		return nil, fmt.Errorf("barrier configuration saving failed: %v", err)
 	}
 
-	barrierKey, barrierUnsealKeys, barrierEncryptedUnsealKeys, barrierPGPFingerprints, err := c.generateShares(barrierConfig)
-	if err != nil {
-		c.logger.Error("core: error generating shares", "error", err)
+	barrierShares, err := c.generateShares(barrierConfig)
+	if err != nil || barrierShares == nil {
+		c.logger.Error("core: error generating barrier shares", "error", err)
 		return nil, err
 	}
 
-	// Associate metadata for all the unseal key shards
-	unsealMetadataJSON, err := c.prepareUnsealKeyShardsMetadata(barrierUnsealKeys, barrierPGPFingerprints)
-	if err != nil {
-		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
-		return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
-	}
-
+	//
 	// Prepare metadata for each of the unseal key shards generated. Associate
 	// the metatada with plaintext unseal key shards and not the PGP encrypted
 	// key shards. Metadata should be created for all the key shards and hence
 	// this should be done before processing stored keys.
+	//
 
+	// Associate metadata for all the unseal key shards
+	unsealMetadataJSON, err := c.prepareUnsealKeyShardsMetadata(barrierShares.KeyShards, barrierShares.PGPKeyFingerprints)
+	if err != nil {
+		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
+		return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
+	}
 	// Determine whether to return plaintext unseal key shards or its PGP
 	// encrypted counterparts
 	var returnedKeys [][]byte
 	switch {
-	case barrierEncryptedUnsealKeys != nil:
-		returnedKeys = barrierEncryptedUnsealKeys
+	case len(barrierShares.PGPEncryptedKeyShards) > 0:
+		returnedKeys = barrierShares.PGPEncryptedKeyShards
 	default:
-		returnedKeys = barrierUnsealKeys
+		returnedKeys = barrierShares.KeyShards
 	}
 
 	// If we are storing shares, pop them out of the returned results and push
@@ -253,7 +273,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	}
 
 	// Initialize the barrier
-	if err := c.barrier.Initialize(barrierKey); err != nil {
+	if err := c.barrier.Initialize(barrierShares.Key); err != nil {
 		c.logger.Error("core: failed to initialize barrier", "error", err)
 		return nil, fmt.Errorf("failed to initialize barrier: %v", err)
 	}
@@ -262,7 +282,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	}
 
 	// Unseal the barrier
-	if err := c.barrier.Unseal(barrierKey); err != nil {
+	if err := c.barrier.Unseal(barrierShares.Key); err != nil {
 		c.logger.Error("core: failed to unseal barrier", "error", err)
 		return nil, fmt.Errorf("failed to unseal barrier: %v", err)
 	}
@@ -306,25 +326,23 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 
 		if recoveryConfig.SecretShares > 0 {
-			recoveryKey, recoveryUnsealKeys, recoveryEncryptedUnsealKeys, _, err := c.generateShares(recoveryConfig)
-			if err != nil {
+			recoveryShares, err := c.generateShares(recoveryConfig)
+			if err != nil || recoveryShares == nil {
 				c.logger.Error("core: failed to generate recovery shares", "error", err)
 				return nil, err
 			}
 
-			err = c.seal.SetRecoveryKey(recoveryKey)
+			err = c.seal.SetRecoveryKey(recoveryShares.Key)
 			if err != nil {
 				return nil, err
 			}
 
 			switch {
-			case recoveryEncryptedUnsealKeys != nil:
-				results.RecoveryShares = recoveryEncryptedUnsealKeys
+			case len(recoveryShares.PGPEncryptedKeyShards) > 0:
+				results.RecoveryShares = recoveryShares.PGPEncryptedKeyShards
 			default:
-				results.RecoveryShares = recoveryUnsealKeys
+				results.RecoveryShares = recoveryShares.KeyShards
 			}
-
-			results.RecoveryShares = recoveryUnsealKeys
 		}
 	}
 
