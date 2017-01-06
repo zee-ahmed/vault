@@ -55,9 +55,9 @@ type InitResult struct {
 // that encrypted each shard.
 type GenerateSharesResult struct {
 	Key                   []byte
-	KeyShards             [][]byte
+	KeyShares             [][]byte
 	PGPKeyFingerprints    []string
-	PGPEncryptedKeyShards [][]byte
+	PGPEncryptedKeyShares [][]byte
 }
 
 // Initialized checks if the Vault is already initialized
@@ -96,26 +96,26 @@ func (c *Core) generateShares(sc *SealConfig) (*GenerateSharesResult, error) {
 	}
 
 	// Return the barrier key if only a single key part is used
-	var keyShards [][]byte
+	var keyShares [][]byte
 	if sc.SecretShares == 1 {
-		keyShards = append(keyShards, keyBytes)
+		keyShares = append(keyShares, keyBytes)
 	} else {
 		// Split the master key using the Shamir algorithm
-		keyShards, err = shamir.Split(keyBytes, sc.SecretShares, sc.SecretThreshold)
+		keyShares, err = shamir.Split(keyBytes, sc.SecretShares, sc.SecretThreshold)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate barrier shares: %v", err)
 		}
 	}
 
 	// If PGP keys are supplied, encrypt the key shards with respective PGP key
-	var pgpEncryptedKeyShards [][]byte
+	var pgpEncryptedKeyShares [][]byte
 	var pgpKeyFingerprints []string
 	if len(sc.PGPKeys) > 0 {
-		hexEncodedShares := make([][]byte, len(keyShards))
-		for i, _ := range keyShards {
-			hexEncodedShares[i] = []byte(hex.EncodeToString(keyShards[i]))
+		hexEncodedShares := make([][]byte, len(keyShares))
+		for i, _ := range keyShares {
+			hexEncodedShares[i] = []byte(hex.EncodeToString(keyShares[i]))
 		}
-		pgpKeyFingerprints, pgpEncryptedKeyShards, err = pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
+		pgpKeyFingerprints, pgpEncryptedKeyShares, err = pgpkeys.EncryptShares(hexEncodedShares, sc.PGPKeys)
 		if err != nil {
 			return nil, err
 		}
@@ -123,25 +123,25 @@ func (c *Core) generateShares(sc *SealConfig) (*GenerateSharesResult, error) {
 
 	return &GenerateSharesResult{
 		Key:                   keyBytes,
-		KeyShards:             keyShards,
+		KeyShares:             keyShares,
 		PGPKeyFingerprints:    pgpKeyFingerprints,
-		PGPEncryptedKeyShards: pgpEncryptedKeyShards,
+		PGPEncryptedKeyShares: pgpEncryptedKeyShares,
 	}, nil
 }
 
-// prepareUnsealKeyShardsMetadata takes in the unseal key shards, both encrypted and
+// prepareUnsealKeySharesMetadata takes in the unseal key shards, both encrypted and
 // unencrypted, associates identifiers for each key shard and JSON encodes it.
 // Identifier for unencrypted key shards will be UUIDs and PGP key fingerprints
 // for encrypted key shards. At least for now, either all the keys will be
 // encrypted or they will be unencrypted, but this function is generic.
-func (c *Core) prepareUnsealKeyShardsMetadata(unsealKeyShards [][]byte, unsealKeysPGPFingerprints []string) ([]byte, error) {
+func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKeysPGPFingerprints []string) ([]byte, error) {
 	unsealMetadataEntry := &unsealMetadataStorageEntry{
 		Data: make(map[string]*unsealKeyMetadata),
 	}
 
 	// Depending on whether PGP keys are employed or not, associate either a
 	// UUID or the PGP fingerprint with the unseal key shards.
-	for i, unsealKeyShard := range unsealKeyShards {
+	for i, unsealKeyShard := range unsealKeyShares {
 		metadata := &unsealKeyMetadata{}
 		if len(unsealKeysPGPFingerprints) > 0 {
 			metadata.PGPFingerprint = unsealKeysPGPFingerprints[i]
@@ -233,7 +233,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	//
 
 	// Associate metadata for all the unseal key shards
-	unsealMetadataJSON, err := c.prepareUnsealKeyShardsMetadata(barrierShares.KeyShards, barrierShares.PGPKeyFingerprints)
+	unsealMetadataJSON, err := c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints)
 	if err != nil {
 		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
 		return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
@@ -242,10 +242,10 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	// encrypted counterparts
 	var returnedKeys [][]byte
 	switch {
-	case len(barrierShares.PGPEncryptedKeyShards) > 0:
-		returnedKeys = barrierShares.PGPEncryptedKeyShards
+	case len(barrierShares.PGPEncryptedKeyShares) > 0:
+		returnedKeys = barrierShares.PGPEncryptedKeyShares
 	default:
-		returnedKeys = barrierShares.KeyShards
+		returnedKeys = barrierShares.KeyShares
 	}
 
 	// If we are storing shares, pop them out of the returned results and push
@@ -338,10 +338,10 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 			}
 
 			switch {
-			case len(recoveryShares.PGPEncryptedKeyShards) > 0:
-				results.RecoveryShares = recoveryShares.PGPEncryptedKeyShards
+			case len(recoveryShares.PGPEncryptedKeyShares) > 0:
+				results.RecoveryShares = recoveryShares.PGPEncryptedKeyShares
 			default:
-				results.RecoveryShares = recoveryShares.KeyShards
+				results.RecoveryShares = recoveryShares.KeyShares
 			}
 		}
 	}
