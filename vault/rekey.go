@@ -385,7 +385,7 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 	}
 
 	// Associate metadata for all the unseal key shards
-	unsealMetadataJSON, err := c.prepareUnsealKeySharesMetadata(unsealKeys, results.PGPFingerprints)
+	unsealMetadataJSON, _, err := c.prepareUnsealKeySharesMetadata(unsealKeys, results.PGPFingerprints)
 	if err != nil {
 		c.logger.Error("core: failed to prepare unseal key shards metadata during rekey", "error", err)
 		return nil, fmt.Errorf("failed to prepare unseal key shards metadata during rekey")

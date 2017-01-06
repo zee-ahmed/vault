@@ -82,9 +82,10 @@ func handleSysInitPut(core *vault.Core, w http.ResponseWriter, r *http.Request) 
 	}
 
 	initParams := &vault.InitParams{
-		BarrierConfig:   barrierConfig,
-		RecoveryConfig:  recoveryConfig,
-		RootTokenPGPKey: req.RootTokenPGPKey,
+		BarrierConfig:        barrierConfig,
+		RecoveryConfig:       recoveryConfig,
+		RootTokenPGPKey:      req.RootTokenPGPKey,
+		EnableKeyIdentifiers: req.EnableKeyIdentifiers,
 	}
 
 	result, initErr := core.Initialize(initParams)
@@ -112,6 +113,16 @@ func handleSysInitPut(core *vault.Core, w http.ResponseWriter, r *http.Request) 
 		RootToken: result.RootToken,
 	}
 
+	var keysMetadata []*UnsealKeyMetadata
+	for _, keyMetadata := range result.KeysMetadata {
+		keysMetadata = append(keysMetadata, &UnsealKeyMetadata{
+			ID:             keyMetadata.ID,
+			PGPFingerprint: keyMetadata.PGPFingerprint,
+		})
+	}
+
+	resp.KeysMetadata = keysMetadata
+
 	if len(result.RecoveryShares) > 0 {
 		resp.RecoveryKeys = make([]string, 0, len(result.RecoveryShares))
 		resp.RecoveryKeysB64 = make([]string, 0, len(result.RecoveryShares))
@@ -127,22 +138,29 @@ func handleSysInitPut(core *vault.Core, w http.ResponseWriter, r *http.Request) 
 }
 
 type InitRequest struct {
-	SecretShares      int      `json:"secret_shares"`
-	SecretThreshold   int      `json:"secret_threshold"`
-	StoredShares      int      `json:"stored_shares"`
-	PGPKeys           []string `json:"pgp_keys"`
-	RecoveryShares    int      `json:"recovery_shares"`
-	RecoveryThreshold int      `json:"recovery_threshold"`
-	RecoveryPGPKeys   []string `json:"recovery_pgp_keys"`
-	RootTokenPGPKey   string   `json:"root_token_pgp_key"`
+	SecretShares         int      `json:"secret_shares"`
+	SecretThreshold      int      `json:"secret_threshold"`
+	StoredShares         int      `json:"stored_shares"`
+	EnableKeyIdentifiers bool     `json:"enable_key_identifiers"`
+	PGPKeys              []string `json:"pgp_keys"`
+	RecoveryShares       int      `json:"recovery_shares"`
+	RecoveryThreshold    int      `json:"recovery_threshold"`
+	RecoveryPGPKeys      []string `json:"recovery_pgp_keys"`
+	RootTokenPGPKey      string   `json:"root_token_pgp_key"`
 }
 
 type InitResponse struct {
-	Keys            []string `json:"keys"`
-	KeysB64         []string `json:"keys_base64"`
-	RecoveryKeys    []string `json:"recovery_keys,omitempty"`
-	RecoveryKeysB64 []string `json:"recovery_keys_base64,omitempty"`
-	RootToken       string   `json:"root_token"`
+	Keys            []string             `json:"keys"`
+	KeysB64         []string             `json:"keys_base64"`
+	RecoveryKeys    []string             `json:"recovery_keys,omitempty"`
+	RecoveryKeysB64 []string             `json:"recovery_keys_base64,omitempty"`
+	RootToken       string               `json:"root_token"`
+	KeysMetadata    []*UnsealKeyMetadata `json:"keys_metadata"`
+}
+
+type UnsealKeyMetadata struct {
+	ID             string `json:"id" structs:"id" mapstructure:"id"`
+	PGPFingerprint string `json:"pgp_fingerprint" structs:"pgp_fingerprint" mapstructure:"pgp_fingerprint"`
 }
 
 type InitStatusResponse struct {

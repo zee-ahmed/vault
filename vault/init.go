@@ -18,11 +18,11 @@ type unsealMetadataStorageEntry struct {
 	// Data is a map from each of the unseal key shard to its respective
 	// identifier. It can either be a UUID or a PGP fingerprint (if PGP keys
 	// were employed to encrypte the shards)
-	Data map[string]*unsealKeyMetadata `json:"data" structs:"data" mapstructure:"data"`
+	Data map[string]*UnsealKeyMetadata `json:"data" structs:"data" mapstructure:"data"`
 }
 
-// unsealKeyMetadata holds metadata associated with each unseal key shard
-type unsealKeyMetadata struct {
+// UnsealKeyMetadata holds metadata associated with each unseal key shard
+type UnsealKeyMetadata struct {
 	// ID is the UUID associated with the unseal key shard. Either this or
 	// PGPFingerprint will be set, but not both.
 	ID string `json:"id" structs:"id" mapstructure:"id"`
@@ -36,9 +36,10 @@ type unsealKeyMetadata struct {
 // InitParams keeps the init function from being littered with too many
 // params, that's it!
 type InitParams struct {
-	BarrierConfig   *SealConfig
-	RecoveryConfig  *SealConfig
-	RootTokenPGPKey string
+	BarrierConfig        *SealConfig
+	RecoveryConfig       *SealConfig
+	RootTokenPGPKey      string
+	EnableKeyIdentifiers bool
 }
 
 // InitResult is used to provide the key parts back after
@@ -47,6 +48,7 @@ type InitResult struct {
 	SecretShares   [][]byte
 	RecoveryShares [][]byte
 	RootToken      string
+	KeysMetadata   []*UnsealKeyMetadata
 }
 
 // GenerateSharesResult is used to provide the master key and its unseal key
@@ -134,36 +136,39 @@ func (c *Core) generateShares(sc *SealConfig) (*GenerateSharesResult, error) {
 // Identifier for unencrypted key shards will be UUIDs and PGP key fingerprints
 // for encrypted key shards. At least for now, either all the keys will be
 // encrypted or they will be unencrypted, but this function is generic.
-func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKeysPGPFingerprints []string) ([]byte, error) {
+func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKeysPGPFingerprints []string) ([]byte, []*UnsealKeyMetadata, error) {
 	unsealMetadataEntry := &unsealMetadataStorageEntry{
-		Data: make(map[string]*unsealKeyMetadata),
+		Data: make(map[string]*UnsealKeyMetadata),
 	}
+
+	var keysMetadata []*UnsealKeyMetadata
 
 	// Depending on whether PGP keys are employed or not, associate either a
 	// UUID or the PGP fingerprint with the unseal key shards.
 	for i, unsealKeyShard := range unsealKeyShares {
-		metadata := &unsealKeyMetadata{}
+		metadata := &UnsealKeyMetadata{}
 		if len(unsealKeysPGPFingerprints) > 0 {
 			metadata.PGPFingerprint = unsealKeysPGPFingerprints[i]
 		} else {
 			unsealKeyUUID, err := uuid.GenerateUUID()
 			if err != nil {
 				c.logger.Error("core: failed to generate unseal key identifier", "error", err)
-				return nil, fmt.Errorf("failed to generate unseal key identifier: %v", err)
+				return nil, nil, fmt.Errorf("failed to generate unseal key identifier: %v", err)
 			}
 			metadata.ID = unsealKeyUUID
 		}
 		unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(unsealKeyShard)] = metadata
+		keysMetadata = append(keysMetadata, metadata)
 	}
 
 	// JSON encode the unseal keys matadata
 	unsealMetadataJSON, err := jsonutil.EncodeJSON(unsealMetadataEntry)
 	if err != nil {
 		c.logger.Error("core: failed to encode unseal metadata", "error", err)
-		return nil, err
+		return nil, nil, err
 	}
 
-	return unsealMetadataJSON, nil
+	return unsealMetadataJSON, keysMetadata, nil
 }
 
 // Initialize is used to initialize the Vault with the given
@@ -225,18 +230,24 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		return nil, err
 	}
 
-	//
-	// Prepare metadata for each of the unseal key shards generated. Associate
-	// the metatada with plaintext unseal key shards and not the PGP encrypted
-	// key shards. Metadata should be created for all the key shards and hence
-	// this should be done before processing stored keys.
-	//
+	results := &InitResult{}
 
-	// Associate metadata for all the unseal key shards
-	unsealMetadataJSON, err := c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints)
-	if err != nil {
-		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
-		return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
+	var unsealMetadataJSON []byte
+
+	if initParams.EnableKeyIdentifiers {
+		//
+		// Prepare metadata for each of the unseal key shards generated. Associate
+		// the metatada with plaintext unseal key shards and not the PGP encrypted
+		// key shards. Metadata should be created for all the key shards and hence
+		// this should be done before processing stored keys.
+		//
+
+		// Associate metadata for all the unseal key shards
+		unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints)
+		if err != nil {
+			c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
+			return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
+		}
 	}
 	// Determine whether to return plaintext unseal key shards or its PGP
 	// encrypted counterparts
@@ -268,9 +279,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 	}
 
-	results := &InitResult{
-		SecretShares: returnedKeys,
-	}
+	results.SecretShares = returnedKeys
 
 	// Initialize the barrier
 	if err := c.barrier.Initialize(barrierShares.Key); err != nil {
@@ -294,14 +303,16 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 		}
 	}()
 
-	// Now that the barrier is unsealed, persist the unseal metadata
-	err = c.barrier.Put(&Entry{
-		Key:   coreUnsealMetadataPath,
-		Value: unsealMetadataJSON,
-	})
-	if err != nil {
-		c.logger.Error("core: failed to store unseal metadata", "error", err)
-		return nil, err
+	if initParams.EnableKeyIdentifiers {
+		// Now that the barrier is unsealed, persist the unseal metadata
+		err = c.barrier.Put(&Entry{
+			Key:   coreUnsealMetadataPath,
+			Value: unsealMetadataJSON,
+		})
+		if err != nil {
+			c.logger.Error("core: failed to store unseal metadata", "error", err)
+			return nil, err
+		}
 	}
 
 	// Perform initial setup

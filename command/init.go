@@ -22,7 +22,7 @@ type InitCommand struct {
 func (c *InitCommand) Run(args []string) int {
 	var threshold, shares, storedShares, recoveryThreshold, recoveryShares int
 	var pgpKeys, recoveryPgpKeys, rootTokenPgpKey pgpkeys.PubKeyFilesFlag
-	var auto, check bool
+	var auto, check, enableKeyIdentifiers bool
 	var consulServiceName string
 	flags := c.Meta.FlagSet("init", meta.FlagSetDefault)
 	flags.Usage = func() { c.Ui.Error(c.Help()) }
@@ -36,19 +36,21 @@ func (c *InitCommand) Run(args []string) int {
 	flags.Var(&recoveryPgpKeys, "recovery-pgp-keys", "")
 	flags.BoolVar(&check, "check", false, "")
 	flags.BoolVar(&auto, "auto", false, "")
+	flags.BoolVar(&enableKeyIdentifiers, "enable-key-identifiers", false, "")
 	flags.StringVar(&consulServiceName, "consul-service", physical.DefaultServiceName, "")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
 
 	initRequest := &api.InitRequest{
-		SecretShares:      shares,
-		SecretThreshold:   threshold,
-		StoredShares:      storedShares,
-		PGPKeys:           pgpKeys,
-		RecoveryShares:    recoveryShares,
-		RecoveryThreshold: recoveryThreshold,
-		RecoveryPGPKeys:   recoveryPgpKeys,
+		SecretShares:         shares,
+		SecretThreshold:      threshold,
+		StoredShares:         storedShares,
+		PGPKeys:              pgpKeys,
+		RecoveryShares:       recoveryShares,
+		RecoveryThreshold:    recoveryThreshold,
+		RecoveryPGPKeys:      recoveryPgpKeys,
+		EnableKeyIdentifiers: enableKeyIdentifiers,
 	}
 
 	switch len(rootTokenPgpKey) {
@@ -231,6 +233,30 @@ func (c *InitCommand) runInit(check bool, initRequest *api.InitRequest) int {
 			c.Ui.Output(fmt.Sprintf("Unseal Key %d: %s", i+1, key))
 		}
 	}
+
+	if initRequest.EnableKeyIdentifiers {
+		if len(resp.KeysMetadata) == 0 {
+			c.Ui.Error("Missing keys metadata in the response")
+			return 1
+		}
+		if len(resp.Keys) != len(resp.KeysMetadata) {
+			c.Ui.Error("Number of keys returned is not matching the number of keys metadata")
+			return 1
+		}
+
+		for i, keyMetadata := range resp.KeysMetadata {
+			switch {
+			case keyMetadata.ID != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d: %s", i+1, keyMetadata.ID))
+			case keyMetadata.PGPFingerprint != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key PGP Key Fingerprint %d: %s", i+1, keyMetadata.PGPFingerprint))
+			default:
+				c.Ui.Error("Invalid key metadata")
+				return 1
+			}
+		}
+	}
+
 	for i, key := range resp.RecoveryKeys {
 		if resp.RecoveryKeysB64 != nil && len(resp.RecoveryKeysB64) == len(resp.RecoveryKeys) {
 			c.Ui.Output(fmt.Sprintf("Recovery Key %d: %s", i+1, resp.RecoveryKeysB64[i]))
