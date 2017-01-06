@@ -229,10 +229,11 @@ type RekeyUpdateRequest struct {
 }
 
 type RekeyUpdateResponse struct {
-	Nonce           string   `json:"nonce"`
-	Complete        bool     `json:"complete"`
-	Keys            []string `json:"keys"`
-	KeysB64         []string `json:"keys_base64"`
-	PGPFingerprints []string `json:"pgp_fingerprints"`
-	Backup          bool     `json:"backup"`
+	Nonce           string               `json:"nonce"`
+	Complete        bool                 `json:"complete"`
+	Keys            []string             `json:"keys"`
+	KeysB64         []string             `json:"keys_base64"`
+	PGPFingerprints []string             `json:"pgp_fingerprints"`
+	Backup          bool                 `json:"backup"`
+	KeysMetadata    []*UnsealKeyMetadata `json:"keys_metadata"`
 }

@@ -193,6 +193,7 @@ type RekeyUpdateResponse struct {
 	KeysB64         []string `json:"keys_base64"`
 	PGPFingerprints []string `json:"pgp_fingerprints"`
 	Backup          bool
+	KeysMetadata    []*UnsealKeyMetadata `json:"keys_metadata"`
 }
 
 type RekeyRetrieveResponse struct {

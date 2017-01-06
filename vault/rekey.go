@@ -32,6 +32,7 @@ type RekeyResult struct {
 	PGPFingerprints []string
 	Backup          bool
 	RecoveryKey     bool
+	KeysMetadata    []*UnsealKeyMetadata
 }
 
 // RekeyBackup stores the backup copy of PGP-encrypted keys
@@ -384,8 +385,9 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		}
 	}
 
+	var unsealMetadataJSON []byte
 	// Associate metadata for all the unseal key shards
-	unsealMetadataJSON, _, err := c.prepareUnsealKeySharesMetadata(unsealKeys, results.PGPFingerprints)
+	unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(unsealKeys, results.PGPFingerprints)
 	if err != nil {
 		c.logger.Error("core: failed to prepare unseal key shards metadata during rekey", "error", err)
 		return nil, fmt.Errorf("failed to prepare unseal key shards metadata during rekey")
