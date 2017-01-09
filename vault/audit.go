@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/armon/go-metrics"
 	log "github.com/mgutz/logxi/v1"
 
-	"github.com/armon/go-metrics"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/audit"
@@ -404,6 +404,38 @@ func (a *AuditBroker) GetHash(name string, input string) (string, error) {
 	}
 
 	return be.backend.GetHash(input), nil
+}
+
+// LogUnseal is used to ensure all the audit backends have an opportunity to
+// log the unseal operation and that *at least one* succeeds.
+func (a *AuditBroker) LogUnseal(keysMetadata *logical.UnsealKeysMetadata, outerErr error) (retErr error) {
+	defer metrics.MeasureSince([]string{"audit", "log_unseal"}, time.Now())
+	a.RLock()
+	defer a.RUnlock()
+	defer func() {
+		if r := recover(); r != nil {
+			a.logger.Error("audit: panic during logging", "error", r)
+			retErr = multierror.Append(retErr, fmt.Errorf("panic generating audit log"))
+		}
+	}()
+
+	// Ensure at least one backend logs
+	anyLogged := false
+	for name, be := range a.backends {
+		start := time.Now()
+		err := be.backend.LogUnseal(keysMetadata, outerErr)
+		metrics.MeasureSince([]string{"audit", name, "log_request"}, start)
+		if err != nil {
+			a.logger.Error("audit: backend failed to log request", "backend", name, "error", err)
+		} else {
+			anyLogged = true
+		}
+	}
+	if !anyLogged && len(a.backends) > 0 {
+		retErr = multierror.Append(retErr, fmt.Errorf("no audit backend succeeded in logging the request"))
+		return
+	}
+	return nil
 }
 
 // LogRequest is used to ensure all the audit backends have an opportunity to

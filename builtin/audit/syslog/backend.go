@@ -94,6 +94,10 @@ func (b *Backend) GetHash(data string) string {
 	return audit.HashString(b.formatConfig.Salt, data)
 }
 
+func (b *Backend) LogUnseal(keysMetadata *logical.UnsealKeysMetadata, outerErr error) error {
+	return nil
+}
+
 func (b *Backend) LogRequest(auth *logical.Auth, req *logical.Request, outerErr error) error {
 	var buf bytes.Buffer
 	if err := b.formatter.FormatRequest(&buf, b.formatConfig, auth, req, outerErr); err != nil {
