@@ -22,10 +22,6 @@ type Backend interface {
 	// a possibility.
 	LogResponse(*logical.Auth, *logical.Request, *logical.Response, error) error
 
-	// LogUnseal is used to log an unseal operation. This is done after the
-	// unseal operation is complete but before the response is sent.
-	LogUnseal(*logical.UnsealKeysMetadata, error) error
-
 	// GetHash is used to return the given data with the backend's hash,
 	// so that a caller can determine if a value in the audit log matches
 	// an expected plaintext value

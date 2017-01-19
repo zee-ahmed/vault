@@ -865,14 +865,12 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 	// For BC compatibility, log the metadata information only if it is
 	// available
 	var unsealMetadataEntry unsealMetadataStorageEntry
-	var auditUnsealMetadata *logical.UnsealKeysMetadata
 	if keysMetadataEntry != nil {
 		// Decode the unseal metadata information
 		if err = jsonutil.DecodeJSON(keysMetadataEntry.Value, &unsealMetadataEntry); err != nil {
 			return false, fmt.Errorf("failed to decode unseal metadata entry: %v", err)
 		}
 
-		var auditUnsealKeysMetadata []*logical.UnsealKeyMetadata
 		for _, unlockPart := range c.unlockInfo.Parts {
 			// Fetch the metadata associated to the unseal key shard
 			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unlockPart))]
@@ -900,15 +898,6 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 				return false, fmt.Errorf("missing unseal key shard metadata")
 			}
 
-			auditUnsealKeysMetadata = append(auditUnsealKeysMetadata, &logical.UnsealKeyMetadata{
-				Name:           keyMetadata.Name,
-				ID:             keyMetadata.ID,
-				PGPFingerprint: keyMetadata.PGPFingerprint,
-			})
-		}
-
-		auditUnsealMetadata = &logical.UnsealKeysMetadata{
-			Metadata: auditUnsealKeysMetadata,
 		}
 	}
 
@@ -938,13 +927,6 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 		c.standbyStopCh = make(chan struct{})
 		c.manualStepDownCh = make(chan struct{})
 		go c.runStandby(c.standbyDoneCh, c.standbyStopCh, c.manualStepDownCh)
-	}
-
-	if c.auditBroker != nil && auditUnsealMetadata != nil {
-		if err := c.auditBroker.LogUnseal(auditUnsealMetadata, nil); err != nil {
-			c.logger.Error("core: failed to audit the unseal operation", "error", err)
-			return false, fmt.Errorf("failed to audit the unseal operation")
-		}
 	}
 
 	// Success!

@@ -111,10 +111,6 @@ func (b *Backend) GetHash(data string) string {
 	return audit.HashString(b.formatConfig.Salt, data)
 }
 
-func (b *Backend) LogUnseal(keysMetadata *logical.UnsealKeysMetadata, outerErr error) error {
-	return nil
-}
-
 func (b *Backend) LogRequest(auth *logical.Auth, req *logical.Request, outerErr error) error {
 	b.fileLock.Lock()
 	defer b.fileLock.Unlock()

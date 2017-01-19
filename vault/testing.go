@@ -359,10 +359,6 @@ func (n *noopAudit) Reload() error {
 	return nil
 }
 
-func (n *noopAudit) LogUnseal(m *logical.UnsealKeysMetadata, e error) error {
-	return nil
-}
-
 type rawHTTP struct{}
 
 func (n *rawHTTP) HandleRequest(req *logical.Request) (*logical.Response, error) {
