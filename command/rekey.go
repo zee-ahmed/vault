@@ -180,6 +180,29 @@ func (c *RekeyCommand) Run(args []string) int {
 		}
 	}
 
+	if len(result.KeysMetadata) > 0 {
+		if len(result.Keys) != len(result.KeysMetadata) {
+			c.Ui.Error("Number of keys returned is not matching the number of keys metadata")
+			return 1
+		}
+
+		for i, keyMetadata := range result.KeysMetadata {
+			switch {
+			case keyMetadata.ID != "" && keyMetadata.Name != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d with name %q: %s", i+1, keyMetadata.Name, keyMetadata.ID))
+			case keyMetadata.ID != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d: %s", i+1, keyMetadata.ID))
+			case keyMetadata.PGPFingerprint != "" && keyMetadata.Name != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key PGP Key Fingerprint %d with name %q: %s", i+1, keyMetadata.Name, keyMetadata.PGPFingerprint))
+			case keyMetadata.PGPFingerprint != "":
+				c.Ui.Output(fmt.Sprintf("Unseal Key PGP Key Fingerprint %d: %s", i+1, keyMetadata.PGPFingerprint))
+			default:
+				c.Ui.Error("Invalid key metadata")
+				return 1
+			}
+		}
+	}
+
 	c.Ui.Output(fmt.Sprintf("\nOperation nonce: %s", result.Nonce))
 
 	if len(result.PGPFingerprints) > 0 && result.Backup {
