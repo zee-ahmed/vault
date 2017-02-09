@@ -210,6 +210,7 @@ func TestSysRekey_Update(t *testing.T) {
 			expected["complete"] = true
 			expected["keys"] = actual["keys"]
 			expected["keys_base64"] = actual["keys_base64"]
+			expected["keys_metadata"] = actual["keys_metadata"]
 		}
 
 		if i+1 < len(keys) && (actual["nonce"] == nil || actual["nonce"].(string) == "") {
