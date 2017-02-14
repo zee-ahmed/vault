@@ -236,7 +236,7 @@ func (c *InitCommand) runInit(check bool, initRequest *api.InitRequest) int {
 
 	if len(resp.KeysMetadata) > 0 {
 		if len(resp.Keys) != len(resp.KeysMetadata) {
-			c.Ui.Error("Number of keys returned is not matching the number of keys metadata")
+			c.Ui.Error("Number of keys returned is not matching the number of key metadata items")
 			return 1
 		}
 

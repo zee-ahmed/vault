@@ -268,7 +268,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints, barrierConfig.KeyIdentifierNames)
 	if err != nil {
 		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
-		return nil, fmt.Errorf("failed to prepare unseal key shards metadata")
+		return nil, fmt.Errorf("failed to prepare unseal key shards metadata: %v", err)
 	}
 
 	// Determine whether to return plaintext unseal key shards or its PGP
