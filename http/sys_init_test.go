@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/vault"
 )
 
@@ -84,6 +85,64 @@ func TestSysInit_pgpKeysEntriesForRecovery(t *testing.T) {
 		"recovery_pgp_keys":  []string{"pgpkey1"},
 	})
 	testResponseStatus(t, resp, 400)
+}
+
+func TestSysInit_UnsealMetadata(t *testing.T) {
+	core := vault.TestCore(t)
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+
+	var actual map[string]interface{}
+
+	// basic case of getting unseal metadata back
+	initInput := map[string]interface{}{
+		"secret_shares":    5,
+		"secret_threshold": 3,
+	}
+	resp := testHttpPut(t, "", addr+"/v1/sys/init", initInput)
+	testResponseStatus(t, resp, 200)
+	testResponseBody(t, resp, &actual)
+
+	keysMetadata := actual["keys_metadata"].([]interface{})
+	if len(keysMetadata) != 5 {
+		t.Fatalf("bad: length of keys_metadata: expected: 5, actual: %d", len(keysMetadata))
+	}
+}
+
+func TestSysInit_UnsealMetadataKeyIdentifierNames(t *testing.T) {
+	core := vault.TestCore(t)
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+
+	var actual map[string]interface{}
+
+	// basic case of getting unseal metadata back
+	initInput := map[string]interface{}{
+		"secret_shares":        5,
+		"secret_threshold":     3,
+		"key_identifier_names": "first,second,third,forth,fifth",
+	}
+
+	// set the key identifier names and check if the associated metadata has
+	// names in it
+	resp := testHttpPut(t, "", addr+"/v1/sys/init", initInput)
+	testResponseStatus(t, resp, 200)
+	testResponseBody(t, resp, &actual)
+
+	keysMetadata := actual["keys_metadata"].([]interface{})
+	nameList := []string{"first", "second", "third", "forth", "fifth"}
+
+	for _, item := range keysMetadata {
+		metadata := item.(map[string]interface{})
+		if metadata["name"].(string) == "" {
+			t.Fatalf("invalid key identifier name")
+		}
+		nameList = strutil.StrListDelete(nameList, metadata["name"].(string))
+	}
+
+	if len(nameList) != 0 {
+		t.Fatalf("bad: length of key identifier names list: expected 0, actual: %d", len(nameList))
+	}
 }
 
 func TestSysInit_put(t *testing.T) {
