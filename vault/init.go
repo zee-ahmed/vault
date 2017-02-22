@@ -320,6 +320,9 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 
 	// Ensure the barrier is re-sealed
 	defer func() {
+		// Defers are LIFO so we need to run this here too to ensure the stop
+		// happens before sealing. preSeal also stops, so we just make the
+		// stopping safe against multiple calls.
 		if err := c.barrier.Seal(); err != nil {
 			c.logger.Error("core: failed to seal barrier", "error", err)
 		}
