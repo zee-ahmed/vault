@@ -920,8 +920,6 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 				return false, fmt.Errorf("failed to fetch unseal key metadata")
 			}
 
-			// Unseal key shards are identified either by UUIDs or by PGP
-			// fingerprints (when PGP keys are used to encrypt the key shards).
 			switch {
 			case keyMetadata.ID != "" && keyMetadata.Name != "":
 				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied", keyMetadata.ID, keyMetadata.Name))

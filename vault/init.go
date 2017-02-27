@@ -18,8 +18,7 @@ import (
 // unseal for logging purposes.
 type unsealMetadataStorageEntry struct {
 	// Data is a map from each of the unseal key shard to its respective
-	// identifier. It can either be a UUID or a PGP fingerprint (if PGP keys
-	// were employed to encrypte the shards)
+	// identifier.
 	Data map[string]*UnsealKeyMetadata `json:"data" structs:"data" mapstructure:"data"`
 }
 
@@ -29,8 +28,7 @@ type UnsealKeyMetadata struct {
 	// associated with the identifier of the unseal key.
 	Name string `json:"name" structs:"name" mapstructure:"name"`
 
-	// ID is the UUID associated with the unseal key shard. Either this or
-	// PGPFingerprint will be set, but not both.
+	// ID is the UUID associated with the unseal key shard
 	ID string `json:"id" structs:"id" mapstructure:"id"`
 }
 
@@ -131,13 +129,10 @@ func (c *Core) generateShares(sc *SealConfig) (*GenerateSharesResult, error) {
 	}, nil
 }
 
-// prepareUnsealKeySharesMetadata takes in the unseal key shards, both encrypted and
-// unencrypted, associates identifiers for each key shard and JSON encodes it.
-// Identifier for unencrypted key shards will be UUIDs and PGP key fingerprints
-// for encrypted key shards. At least for now, either all the keys will be
-// encrypted or they will be unencrypted, but this function is generic.
+// prepareUnsealKeySharesMetadata takes in the unseal key shards, both
+// encrypted and unencrypted, associates identifiers for each key shard and
+// JSON encodes it. Identifier for unencrypted key shards will be UUIDs.
 func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKeysPGPFingerprints []string, keyIdentifierNames string) ([]byte, []*UnsealKeyMetadata, error) {
-
 	// If keyIdentifierNames are supplied, parse them
 	var identifierNames []string
 	if keyIdentifierNames != "" {
@@ -155,8 +150,7 @@ func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKe
 
 	var keysMetadata []*UnsealKeyMetadata
 
-	// Depending on whether PGP keys are employed or not, associate either a
-	// UUID or the PGP fingerprint with the unseal key shards.
+	// Associate a UUID for each unseal key shard
 	for i, unsealKeyShard := range unsealKeyShares {
 		metadata := &UnsealKeyMetadata{}
 		unsealKeyUUID, err := uuid.GenerateUUID()
