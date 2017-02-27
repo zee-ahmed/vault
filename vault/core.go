@@ -860,14 +860,6 @@ func (c *Core) unsealPart(config *SealConfig, key []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Best-effort memzero of unlock parts once we're done with them
-	defer func() {
-		for i, _ := range c.unlockInfo.Parts {
-			memzero(c.unlockInfo.Parts[i])
-		}
-		c.unlockInfo = nil
-	}()
-
 	// Recover the master key
 	var masterKey []byte
 	var err error
@@ -941,8 +933,13 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 		}
 	}
 
-	// Mark unlockInfo to be garbage collected
-	c.unlockInfo = nil
+	// Best-effort memzero of unlock parts once we're done with them
+	defer func() {
+		for i, _ := range c.unlockInfo.Parts {
+			memzero(c.unlockInfo.Parts[i])
+		}
+		c.unlockInfo = nil
+	}()
 
 	// Do post-unseal setup if HA is not enabled
 	if c.ha == nil {
