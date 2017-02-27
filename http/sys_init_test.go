@@ -107,6 +107,13 @@ func TestSysInit_UnsealMetadata(t *testing.T) {
 	if len(keysMetadata) != 5 {
 		t.Fatalf("bad: length of keys_metadata: expected: 5, actual: %d", len(keysMetadata))
 	}
+
+	for _, item := range keysMetadata {
+		metadata := item.(map[string]interface{})
+		if metadata["id"].(string) == "" {
+			t.Fatalf("bad: missing identifier in keysMetadata: %#v", keysMetadata)
+		}
+	}
 }
 
 func TestSysInit_UnsealMetadataKeyIdentifierNames(t *testing.T) {
@@ -132,8 +139,15 @@ func TestSysInit_UnsealMetadataKeyIdentifierNames(t *testing.T) {
 	keysMetadata := actual["keys_metadata"].([]interface{})
 	nameList := []string{"first", "second", "third", "forth", "fifth"}
 
+	if len(keysMetadata) != 5 {
+		t.Fatalf("bad: length of keys_metadata: expected: 5, actual: %d", len(keysMetadata))
+	}
+
 	for _, item := range keysMetadata {
 		metadata := item.(map[string]interface{})
+		if metadata["id"].(string) == "" {
+			t.Fatalf("bad: missing identifier in keysMetadata: %#v", keysMetadata)
+		}
 		if metadata["name"].(string) == "" {
 			t.Fatalf("invalid key identifier name")
 		}

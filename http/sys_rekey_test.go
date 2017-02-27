@@ -164,6 +164,50 @@ func TestSysRekey_badKey(t *testing.T) {
 	testResponseStatus(t, resp, 400)
 }
 
+func TestSysRekey_UnsealMetadata(t *testing.T) {
+	core, keys, token := vault.TestCoreUnsealed(t)
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+	TestServerAuth(t, addr, token)
+
+	resp := testHttpPut(t, token, addr+"/v1/sys/rekey/init", map[string]interface{}{
+		"secret_shares":    5,
+		"secret_threshold": 3,
+	})
+	var rekeyStatus map[string]interface{}
+	testResponseStatus(t, resp, 200)
+	testResponseBody(t, resp, &rekeyStatus)
+
+	var actual map[string]interface{}
+	for i, key := range keys {
+		resp = testHttpPut(t, token, addr+"/v1/sys/rekey/update", map[string]interface{}{
+			"nonce": rekeyStatus["nonce"].(string),
+			"key":   hex.EncodeToString(key),
+		})
+
+		testResponseStatus(t, resp, 200)
+		if i+1 == len(keys) {
+			testResponseBody(t, resp, &actual)
+		}
+	}
+
+	if actual == nil {
+		t.Fatalf("failed to rekey")
+	}
+
+	keysMetadata := actual["keys_metadata"].([]interface{})
+	if len(keysMetadata) != 5 {
+		t.Fatalf("bad: length of keys_metadata: expected: 5, actual: %d", len(keysMetadata))
+	}
+
+	for _, item := range keysMetadata {
+		metadata := item.(map[string]interface{})
+		if metadata["id"].(string) == "" {
+			t.Fatalf("bad: missing identifier in keysMetadata: %#v", keysMetadata)
+		}
+	}
+}
+
 func TestSysRekey_Update(t *testing.T) {
 	core, keys, token := vault.TestCoreUnsealed(t)
 	ln, addr := TestServer(t, core)
