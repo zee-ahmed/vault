@@ -56,7 +56,6 @@ type InitResponse struct {
 }
 
 type UnsealKeyMetadata struct {
-	Name           string `json:"name" structs:"name" mapstructure:"name"`
-	ID             string `json:"id" structs:"id" mapstructure:"id"`
-	PGPFingerprint string `json:"pgp_fingerprint" structs:"pgp_fingerprint" mapstructure:"pgp_fingerprint"`
+	Name string `json:"name" structs:"name" mapstructure:"name"`
+	ID   string `json:"id" structs:"id" mapstructure:"id"`
 }

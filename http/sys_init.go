@@ -128,9 +128,8 @@ func handleSysInitPut(core *vault.Core, w http.ResponseWriter, r *http.Request) 
 	var keysMetadata []*UnsealKeyMetadata
 	for _, keyMetadata := range result.KeysMetadata {
 		keysMetadata = append(keysMetadata, &UnsealKeyMetadata{
-			Name:           keyMetadata.Name,
-			ID:             keyMetadata.ID,
-			PGPFingerprint: keyMetadata.PGPFingerprint,
+			Name: keyMetadata.Name,
+			ID:   keyMetadata.ID,
 		})
 	}
 
@@ -172,9 +171,8 @@ type InitResponse struct {
 }
 
 type UnsealKeyMetadata struct {
-	Name           string `json:"name" structs:"name" mapstructure:"name"`
-	ID             string `json:"id" structs:"id" mapstructure:"id"`
-	PGPFingerprint string `json:"pgp_fingerprint" structs:"pgp_fingerprint" mapstructure:"pgp_fingerprint"`
+	Name string `json:"name" structs:"name" mapstructure:"name"`
+	ID   string `json:"id" structs:"id" mapstructure:"id"`
 }
 
 type InitStatusResponse struct {

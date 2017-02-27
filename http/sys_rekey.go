@@ -217,9 +217,8 @@ func handleSysRekeyUpdate(core *vault.Core, recovery bool) http.Handler {
 			var keysMetadata []*UnsealKeyMetadata
 			for _, keyMetadata := range result.KeysMetadata {
 				keysMetadata = append(keysMetadata, &UnsealKeyMetadata{
-					Name:           keyMetadata.Name,
-					ID:             keyMetadata.ID,
-					PGPFingerprint: keyMetadata.PGPFingerprint,
+					Name: keyMetadata.Name,
+					ID:   keyMetadata.ID,
 				})
 			}
 

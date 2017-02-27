@@ -921,10 +921,6 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied", keyMetadata.ID, keyMetadata.Name))
 			case keyMetadata.ID != "":
 				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied", keyMetadata.ID))
-			case keyMetadata.PGPFingerprint != "" && keyMetadata.Name != "":
-				c.logger.Info(fmt.Sprintf("core: unseal key with PGP fingerprint %q with name %q supplied", keyMetadata.PGPFingerprint, keyMetadata.Name))
-			case keyMetadata.PGPFingerprint != "":
-				c.logger.Info(fmt.Sprintf("core: unseal key with PGP fingerprint %q supplied", keyMetadata.PGPFingerprint))
 			default:
 				c.logger.Error("core: missing unseal key shard metadata")
 				return false, fmt.Errorf("missing unseal key shard metadata")

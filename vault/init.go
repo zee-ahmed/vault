@@ -32,11 +32,6 @@ type UnsealKeyMetadata struct {
 	// ID is the UUID associated with the unseal key shard. Either this or
 	// PGPFingerprint will be set, but not both.
 	ID string `json:"id" structs:"id" mapstructure:"id"`
-
-	// PGPFingerprint is the PGP fingerprint of the key used to encrypt the
-	// unseal key shard with. Either this or the ID will be set, but not
-	// both.
-	PGPFingerprint string `json:"pgp_fingerprint" structs:"pgp_fingerprint" mapstructure:"pgp_fingerprint"`
 }
 
 // InitParams keeps the init function from being littered with too many
@@ -164,16 +159,12 @@ func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKe
 	// UUID or the PGP fingerprint with the unseal key shards.
 	for i, unsealKeyShard := range unsealKeyShares {
 		metadata := &UnsealKeyMetadata{}
-		if len(unsealKeysPGPFingerprints) > 0 {
-			metadata.PGPFingerprint = unsealKeysPGPFingerprints[i]
-		} else {
-			unsealKeyUUID, err := uuid.GenerateUUID()
-			if err != nil {
-				c.logger.Error("core: failed to generate unseal key identifier", "error", err)
-				return nil, nil, fmt.Errorf("failed to generate unseal key identifier: %v", err)
-			}
-			metadata.ID = unsealKeyUUID
+		unsealKeyUUID, err := uuid.GenerateUUID()
+		if err != nil {
+			c.logger.Error("core: failed to generate unseal key identifier", "error", err)
+			return nil, nil, fmt.Errorf("failed to generate unseal key identifier: %v", err)
 		}
+		metadata.ID = unsealKeyUUID
 
 		// Attach the name for the identifier if supplied
 		if len(identifierNames) > 0 {

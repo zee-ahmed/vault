@@ -192,10 +192,6 @@ func (c *RekeyCommand) Run(args []string) int {
 				c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d with name %q: %s", i+1, keyMetadata.Name, keyMetadata.ID))
 			case keyMetadata.ID != "":
 				c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d: %s", i+1, keyMetadata.ID))
-			case keyMetadata.PGPFingerprint != "" && keyMetadata.Name != "":
-				c.Ui.Output(fmt.Sprintf("Unseal Key PGP Key Fingerprint %d with name %q: %s", i+1, keyMetadata.Name, keyMetadata.PGPFingerprint))
-			case keyMetadata.PGPFingerprint != "":
-				c.Ui.Output(fmt.Sprintf("Unseal Key PGP Key Fingerprint %d: %s", i+1, keyMetadata.PGPFingerprint))
 			default:
 				c.Ui.Error("Invalid key metadata")
 				return 1
