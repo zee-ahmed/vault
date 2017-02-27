@@ -591,10 +591,29 @@ CLUSTER_SYNTHESIS_COMPLETE:
 				"    "+export+" VAULT_ADDR="+quote+"http://"+config.Listeners[0].Config["address"]+quote+"\n\n"+
 				"The unseal key and root token are reproduced below in case you\n"+
 				"want to seal/unseal the Vault or play with authentication.\n\n"+
-				"Unseal Key: %s\nRoot Token: %s\n",
+				"Unseal Key: %s",
 			base64.StdEncoding.EncodeToString(init.SecretShares[0]),
-			init.RootToken,
 		))
+
+		if len(init.KeysMetadata) > 0 {
+			if len(init.SecretShares) != len(init.KeysMetadata) {
+				c.Ui.Error("Number of keys returned is not matching the number of key metadata items")
+				return 1
+			}
+			for i, keyMetadata := range init.KeysMetadata {
+				switch {
+				case keyMetadata.ID != "" && keyMetadata.Name != "":
+					c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d with name %q: %s", i+1, keyMetadata.Name, keyMetadata.ID))
+				case keyMetadata.ID != "":
+					c.Ui.Output(fmt.Sprintf("Unseal Key Identifier %d: %s", i+1, keyMetadata.ID))
+				default:
+					c.Ui.Error("Invalid key metadata")
+					return 1
+				}
+			}
+		}
+
+		c.Ui.Output(fmt.Sprintf("Root Token: %s\n", init.RootToken))
 	}
 
 	// Initialize the HTTP server
