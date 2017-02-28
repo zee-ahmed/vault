@@ -7,7 +7,9 @@ import (
 
 	"github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/helper/consts"
+	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/pgpkeys"
+	"github.com/hashicorp/vault/helper/salt"
 	"github.com/hashicorp/vault/helper/xor"
 	"github.com/hashicorp/vault/shamir"
 )
@@ -216,10 +218,8 @@ func (c *Core) GenerateRootUpdate(key []byte, nonce string) (*GenerateRootResult
 	var masterKey []byte
 	if config.SecretThreshold == 1 {
 		masterKey = c.generateRootProgress[0]
-		c.generateRootProgress = nil
 	} else {
 		masterKey, err = shamir.Combine(c.generateRootProgress)
-		c.generateRootProgress = nil
 		if err != nil {
 			return nil, fmt.Errorf("failed to compute master key: %v", err)
 		}
@@ -237,6 +237,47 @@ func (c *Core) GenerateRootUpdate(key []byte, nonce string) (*GenerateRootResult
 			return nil, err
 		}
 	}
+
+	// Fetch the unseal keys metadata and log which of the unseal key holders
+	// generated the root token
+	keysMetadataEntry, err := c.barrier.Get(coreUnsealMetadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch unseal metadata entry: %v", err)
+	}
+
+	// For BC compatibility, log the metadata information only if it is
+	// available
+	var unsealMetadataEntry unsealMetadataStorageEntry
+	if keysMetadataEntry != nil {
+		// Decode the unseal metadata information
+		if err = jsonutil.DecodeJSON(keysMetadataEntry.Value, &unsealMetadataEntry); err != nil {
+			return nil, fmt.Errorf("failed to decode unseal metadata entry: %v", err)
+		}
+
+		for _, unlockPart := range c.generateRootProgress {
+			// Fetch the metadata associated to the unseal key shard
+			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unlockPart))]
+
+			// If the storage entry is successfully read, metadata associated
+			// with all the unseal keys must be available.
+			if !ok || keyMetadata == nil {
+				c.logger.Error("core: failed to fetch unseal key metadata")
+				return nil, fmt.Errorf("failed to fetch unseal key metadata")
+			}
+
+			switch {
+			case keyMetadata.ID != "" && keyMetadata.Name != "":
+				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied for generating root token", keyMetadata.ID, keyMetadata.Name))
+			case keyMetadata.ID != "":
+				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied for generating root token", keyMetadata.ID))
+			default:
+				c.logger.Error("core: missing unseal key shard metadata while generating root token")
+				return nil, fmt.Errorf("missing unseal key shard metadata while generating root token")
+			}
+		}
+	}
+
+	c.generateRootProgress = nil
 
 	te, err := c.tokenStore.rootToken()
 	if err != nil {
