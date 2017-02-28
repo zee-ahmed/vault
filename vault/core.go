@@ -929,7 +929,6 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 				c.logger.Error("core: missing unseal key shard metadata")
 				return false, fmt.Errorf("missing unseal key shard metadata")
 			}
-
 		}
 	}
 

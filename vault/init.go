@@ -132,7 +132,7 @@ func (c *Core) generateShares(sc *SealConfig) (*GenerateSharesResult, error) {
 // prepareUnsealKeySharesMetadata takes in the unseal key shards, both
 // encrypted and unencrypted, associates identifiers for each key shard and
 // JSON encodes it. Identifier for unencrypted key shards will be UUIDs.
-func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, unsealKeysPGPFingerprints []string, keyIdentifierNames string) ([]byte, []*UnsealKeyMetadata, error) {
+func (c *Core) prepareUnsealKeySharesMetadata(unsealKeyShares [][]byte, keyIdentifierNames string) ([]byte, []*UnsealKeyMetadata, error) {
 	// If keyIdentifierNames are supplied, parse them
 	var identifierNames []string
 	if keyIdentifierNames != "" {
@@ -250,7 +250,7 @@ func (c *Core) Initialize(initParams *InitParams) (*InitResult, error) {
 	//
 
 	// Associate metadata for all the unseal key shards
-	unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierShares.PGPKeyFingerprints, barrierConfig.KeyIdentifierNames)
+	unsealMetadataJSON, results.KeysMetadata, err = c.prepareUnsealKeySharesMetadata(barrierShares.KeyShares, barrierConfig.KeyIdentifierNames)
 	if err != nil {
 		c.logger.Error("core: failed to prepare unseal key shards metadata", "error", err)
 		return nil, fmt.Errorf("failed to prepare unseal key shards metadata: %v", err)
