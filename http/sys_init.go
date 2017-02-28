@@ -10,6 +10,29 @@ import (
 	"github.com/hashicorp/vault/vault"
 )
 
+func handleSysInitKeyIdentifiers(core *vault.Core) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			identifiers := &InitKeyIdentifiersResponse{}
+			result, err := core.KeyIdentifiers()
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, err)
+				return
+			}
+			for _, identifier := range result.KeyIdentifiers {
+				identifiers.KeyIdentifiers = append(identifiers.KeyIdentifiers, &UnsealKeyMetadata{
+					ID:   identifier.ID,
+					Name: identifier.Name,
+				})
+			}
+			respondOk(w, identifiers)
+		default:
+			respondError(w, http.StatusMethodNotAllowed, nil)
+		}
+	})
+}
+
 func handleSysInit(core *vault.Core) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -147,6 +170,10 @@ func handleSysInitPut(core *vault.Core, w http.ResponseWriter, r *http.Request) 
 	core.UnsealWithStoredKeys()
 
 	respondOk(w, resp)
+}
+
+type InitKeyIdentifiersResponse struct {
+	KeyIdentifiers []*UnsealKeyMetadata `json:"key_identifiers"`
 }
 
 type InitRequest struct {

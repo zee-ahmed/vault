@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/go-uuid"
+	"github.com/hashicorp/vault/helper/consts"
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/pgpkeys"
 	"github.com/hashicorp/vault/helper/salt"
@@ -49,6 +50,12 @@ type InitResult struct {
 	KeysMetadata   []*UnsealKeyMetadata
 }
 
+// InitKeyIdentifiersResponse contains the UUID identifiers associated with the
+// unseal key shards
+type InitKeyIdentifiersResponse struct {
+	KeyIdentifiers []*UnsealKeyMetadata
+}
+
 // GenerateSharesResult is used to provide the master key and its unseal key
 // shards. If PGP keys are used to encrypt the key shards this will also hold
 // the encrypted key shards and the PGP key fingerprint of the respective key
@@ -58,6 +65,41 @@ type GenerateSharesResult struct {
 	KeyShares             [][]byte
 	PGPKeyFingerprints    []string
 	PGPEncryptedKeyShares [][]byte
+}
+
+// KeyIdentifiers returns the unique UUIDs associated with each of the unseal
+// key share. This enables key share holders to verify that the identifier of
+// the unseal key share given to them is actually valid.
+func (c *Core) KeyIdentifiers() (*InitKeyIdentifiersResponse, error) {
+	if c.sealed {
+		return nil, consts.ErrSealed
+	}
+	if c.standby {
+		return nil, consts.ErrStandby
+	}
+
+	entry, err := c.barrier.Get(coreUnsealMetadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch unseal metadata entry: %v", err)
+	}
+	if entry == nil {
+		return nil, nil
+	}
+
+	var storageEntry unsealMetadataStorageEntry
+	if err = jsonutil.DecodeJSON(entry.Value, &storageEntry); err != nil {
+		return nil, fmt.Errorf("failed to decode unseal metadata entry: %v", err)
+	}
+
+	response := &InitKeyIdentifiersResponse{}
+	for _, unsealKeyMetadata := range storageEntry.Data {
+		if unsealKeyMetadata == nil || unsealKeyMetadata.ID == "" {
+			return nil, fmt.Errorf("invalid unseal metadata entry in storage")
+		}
+		response.KeyIdentifiers = append(response.KeyIdentifiers, unsealKeyMetadata)
+	}
+
+	return response, nil
 }
 
 // Initialized checks if the Vault is already initialized
