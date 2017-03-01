@@ -922,9 +922,9 @@ func (c *Core) unsealInternal(masterKey []byte) (bool, error) {
 
 			switch {
 			case keyMetadata.ID != "" && keyMetadata.Name != "":
-				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied", keyMetadata.ID, keyMetadata.Name))
+				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied for unsealing", keyMetadata.ID, keyMetadata.Name))
 			case keyMetadata.ID != "":
-				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied", keyMetadata.ID))
+				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied for unsealing", keyMetadata.ID))
 			default:
 				c.logger.Error("core: missing unseal key shard metadata")
 				return false, fmt.Errorf("missing unseal key shard metadata")

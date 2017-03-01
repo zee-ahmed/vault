@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"github.com/hashicorp/vault/helper/consts"
 	"github.com/hashicorp/vault/helper/jsonutil"
 	"github.com/hashicorp/vault/helper/pgpkeys"
+	"github.com/hashicorp/vault/helper/salt"
 	"github.com/hashicorp/vault/physical"
 	"github.com/hashicorp/vault/shamir"
 )
@@ -303,10 +305,8 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 	var masterKey []byte
 	if existingConfig.SecretThreshold == 1 {
 		masterKey = c.barrierRekeyProgress[0]
-		c.barrierRekeyProgress = nil
 	} else {
 		masterKey, err = shamir.Combine(c.barrierRekeyProgress)
-		c.barrierRekeyProgress = nil
 		if err != nil {
 			return nil, fmt.Errorf("failed to compute master key: %v", err)
 		}
@@ -316,6 +316,47 @@ func (c *Core) BarrierRekeyUpdate(key []byte, nonce string) (*RekeyResult, error
 		c.logger.Error("core: rekey aborted, master key verification failed", "error", err)
 		return nil, err
 	}
+
+	// Fetch the unseal keys metadata and log which of the unseal key holders
+	// generated the root token
+	keysMetadataEntry, err := c.barrier.Get(coreUnsealMetadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch unseal metadata entry: %v", err)
+	}
+
+	// For BC compatibility, log the metadata information only if it is
+	// available
+	var unsealMetadataEntry unsealMetadataStorageEntry
+	if keysMetadataEntry != nil {
+		// Decode the unseal metadata information
+		if err = jsonutil.DecodeJSON(keysMetadataEntry.Value, &unsealMetadataEntry); err != nil {
+			return nil, fmt.Errorf("failed to decode unseal metadata entry: %v", err)
+		}
+
+		for _, unlockPart := range c.barrierRekeyProgress {
+			// Fetch the metadata associated to the unseal key shard
+			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unlockPart))]
+
+			// If the storage entry is successfully read, metadata associated
+			// with all the unseal keys must be available.
+			if !ok || keyMetadata == nil {
+				c.logger.Error("core: failed to fetch unseal key metadata")
+				return nil, fmt.Errorf("failed to fetch unseal key metadata")
+			}
+
+			switch {
+			case keyMetadata.ID != "" && keyMetadata.Name != "":
+				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied for rekeying", keyMetadata.ID, keyMetadata.Name))
+			case keyMetadata.ID != "":
+				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied for rekeying", keyMetadata.ID))
+			default:
+				c.logger.Error("core: missing unseal key shard metadata while rekeying")
+				return nil, fmt.Errorf("missing unseal key shard metadata while rekeying")
+			}
+		}
+	}
+
+	c.barrierRekeyProgress = nil
 
 	// Generate a new master key
 	newMasterKey, err := c.barrier.GenerateKey()
