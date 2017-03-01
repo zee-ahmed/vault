@@ -16,14 +16,14 @@ func TestCore_Rekey_Lifecycle(t *testing.T) {
 	bc.SecretShares = 1
 	bc.SecretThreshold = 1
 	bc.StoredShares = 0
-	c, masterKeys, recoveryKeys, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
+	c, masterKeys, recoveryKeys, _, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
 	if len(masterKeys) != 1 {
 		t.Fatalf("expected %d keys, got %d", bc.SecretShares-bc.StoredShares, len(masterKeys))
 	}
 	testCore_Rekey_Lifecycle_Common(t, c, masterKeys, false)
 
 	bc, rc = TestSealDefConfigs()
-	c, masterKeys, recoveryKeys, _ = TestCoreUnsealedWithConfigs(t, bc, rc)
+	c, masterKeys, recoveryKeys, _, _ = TestCoreUnsealedWithConfigs(t, bc, rc)
 	if len(masterKeys) != 3 {
 		t.Fatalf("expected %d keys, got %d", bc.SecretShares-bc.StoredShares, len(masterKeys))
 	}
@@ -102,7 +102,7 @@ func TestCore_Rekey_Init(t *testing.T) {
 	testCore_Rekey_Init_Common(t, c, false)
 
 	bc, rc := TestSealDefConfigs()
-	c, _, _, _ = TestCoreUnsealedWithConfigs(t, bc, rc)
+	c, _, _, _, _ = TestCoreUnsealedWithConfigs(t, bc, rc)
 	testCore_Rekey_Init_Common(t, c, false)
 	testCore_Rekey_Init_Common(t, c, true)
 }
@@ -140,12 +140,12 @@ func TestCore_Rekey_Update(t *testing.T) {
 	bc.SecretShares = 1
 	bc.SecretThreshold = 1
 	bc.StoredShares = 0
-	c, masterKeys, _, root := TestCoreUnsealedWithConfigs(t, bc, rc)
+	c, masterKeys, _, root, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
 	testCore_Rekey_Update_Common(t, c, masterKeys, root, false)
 
 	bc, rc = TestSealDefConfigs()
 	bc.StoredShares = 0
-	c, masterKeys, recoveryKeys, root := TestCoreUnsealedWithConfigs(t, bc, rc)
+	c, masterKeys, recoveryKeys, root, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
 	testCore_Rekey_Update_Common(t, c, masterKeys, root, false)
 	testCore_Rekey_Update_Common(t, c, recoveryKeys, root, true)
 }
@@ -326,7 +326,7 @@ func TestCore_Rekey_Invalid(t *testing.T) {
 	bc.SecretThreshold = 1
 	rc.SecretShares = 1
 	rc.SecretThreshold = 1
-	c, masterKeys, recoveryKeys, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
+	c, masterKeys, recoveryKeys, _, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
 	testCore_Rekey_Invalid_Common(t, c, masterKeys, false)
 	testCore_Rekey_Invalid_Common(t, c, recoveryKeys, true)
 }

@@ -116,6 +116,57 @@ func TestSysInit_UnsealMetadata(t *testing.T) {
 	}
 }
 
+func TestSysInit_KeyIdentifiersCase1(t *testing.T) {
+	core, _, token := vault.TestCoreUnsealed(t)
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+	TestServerAuth(t, addr, token)
+
+	var actual InitKeyIdentifiersResponse
+	resp := testHttpGet(t, token, addr+"/v1/sys/init/key-identifiers")
+	testResponseStatus(t, resp, 200)
+	testResponseBody(t, resp, &actual)
+
+	for _, identifier := range actual.KeyIdentifiers {
+		if identifier.ID == "" {
+			t.Fatalf("bad: key identifier is empty")
+		}
+	}
+}
+
+func TestSysInit_KeyIdentifiersCase2(t *testing.T) {
+	bc, rc := vault.TestSealDefConfigs()
+	core, _, _, token, keyIdentifiers := vault.TestCoreUnsealedWithConfigs(t, bc, rc)
+	if len(keyIdentifiers) != 5 {
+		t.Fatalf("bad: number of key identifiers; expected: 5, actual: %d", len(keyIdentifiers))
+	}
+
+	ln, addr := TestServer(t, core)
+	defer ln.Close()
+	TestServerAuth(t, addr, token)
+
+	var actual InitKeyIdentifiersResponse
+	resp := testHttpGet(t, token, addr+"/v1/sys/init/key-identifiers")
+	testResponseStatus(t, resp, 200)
+	testResponseBody(t, resp, &actual)
+
+	nameList := []string{"first", "second", "third", "forth", "fifth"}
+
+	for _, identifier := range actual.KeyIdentifiers {
+		if identifier.ID == "" {
+			t.Fatalf("bad: key identifier is empty")
+		}
+		if identifier.Name == "" {
+			t.Fatalf("bad: key identifier name is empty")
+		}
+		nameList = strutil.StrListDelete(nameList, identifier.Name)
+	}
+
+	if len(nameList) != 0 {
+		t.Fatalf("bad: length of key identifier names list: expected 0, actual: %d", len(nameList))
+	}
+}
+
 func TestSysInit_UnsealMetadataKeyIdentifierNames(t *testing.T) {
 	core := vault.TestCore(t)
 	ln, addr := TestServer(t, core)

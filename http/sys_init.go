@@ -14,12 +14,13 @@ func handleSysInitKeyIdentifiers(core *vault.Core) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET":
-			identifiers := &InitKeyIdentifiersResponse{}
 			result, err := core.KeyIdentifiers()
 			if err != nil {
 				respondError(w, http.StatusInternalServerError, err)
 				return
 			}
+
+			identifiers := &InitKeyIdentifiersResponse{}
 			for _, identifier := range result.KeyIdentifiers {
 				identifiers.KeyIdentifiers = append(identifiers.KeyIdentifiers, &UnsealKeyMetadata{
 					ID:   identifier.ID,
