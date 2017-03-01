@@ -98,10 +98,11 @@ func (c *RekeyCommand) Run(args []string) int {
 			})
 		} else {
 			rekeyStatus, err = client.Sys().RekeyInit(&api.RekeyInitRequest{
-				SecretShares:    shares,
-				SecretThreshold: threshold,
-				PGPKeys:         pgpKeys,
-				Backup:          backup,
+				SecretShares:       shares,
+				SecretThreshold:    threshold,
+				KeyIdentifierNames: keyIdentifierNames,
+				PGPKeys:            pgpKeys,
+				Backup:             backup,
 			})
 		}
 		if err != nil {
