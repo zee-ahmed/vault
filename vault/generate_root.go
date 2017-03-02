@@ -256,23 +256,23 @@ func (c *Core) GenerateRootUpdate(key []byte, nonce string) (*GenerateRootResult
 
 		for _, unlockPart := range c.generateRootProgress {
 			// Fetch the metadata associated to the unseal key shard
-			keyMetadata, ok := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unlockPart))]
+			keyMetadata, _ := unsealMetadataEntry.Data[base64.StdEncoding.EncodeToString(salt.SHA256Hash(unlockPart))]
 
-			// If the storage entry is successfully read, metadata associated
-			// with all the unseal keys must be available.
-			if !ok || keyMetadata == nil {
-				c.logger.Error("core: failed to fetch unseal key metadata")
-				return nil, fmt.Errorf("failed to fetch unseal key metadata")
-			}
+			// Ideally we need to error out if key metadata is not available.
+			// When this code path is hit with recovery keys there won't be
+			// matching key metadata against it. Hence checking it for not being
+			// nil.
 
-			switch {
-			case keyMetadata.ID != "" && keyMetadata.Name != "":
-				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied for generating root token", keyMetadata.ID, keyMetadata.Name))
-			case keyMetadata.ID != "":
-				c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied for generating root token", keyMetadata.ID))
-			default:
-				c.logger.Error("core: missing unseal key shard metadata while generating root token")
-				return nil, fmt.Errorf("missing unseal key shard metadata while generating root token")
+			if keyMetadata != nil {
+				switch {
+				case keyMetadata.ID != "" && keyMetadata.Name != "":
+					c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q with name %q supplied for generating root token", keyMetadata.ID, keyMetadata.Name))
+				case keyMetadata.ID != "":
+					c.logger.Info(fmt.Sprintf("core: unseal key with identifier %q supplied for generating root token", keyMetadata.ID))
+				default:
+					c.logger.Error("core: missing unseal key shard metadata while generating root token")
+					return nil, fmt.Errorf("missing unseal key shard metadata while generating root token")
+				}
 			}
 		}
 	}

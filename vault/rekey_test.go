@@ -15,6 +15,7 @@ func TestCore_Rekey_Lifecycle(t *testing.T) {
 	bc, rc := TestSealDefConfigs()
 	bc.SecretShares = 1
 	bc.SecretThreshold = 1
+	bc.KeyIdentifierNames = "one"
 	bc.StoredShares = 0
 	c, masterKeys, recoveryKeys, _, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
 	if len(masterKeys) != 1 {
@@ -139,6 +140,7 @@ func TestCore_Rekey_Update(t *testing.T) {
 	bc, rc := TestSealDefConfigs()
 	bc.SecretShares = 1
 	bc.SecretThreshold = 1
+	bc.KeyIdentifierNames = "one"
 	bc.StoredShares = 0
 	c, masterKeys, _, root, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
 	testCore_Rekey_Update_Common(t, c, masterKeys, root, false)
@@ -324,6 +326,7 @@ func TestCore_Rekey_Invalid(t *testing.T) {
 	bc.StoredShares = 0
 	bc.SecretShares = 1
 	bc.SecretThreshold = 1
+	bc.KeyIdentifierNames = "one"
 	rc.SecretShares = 1
 	rc.SecretThreshold = 1
 	c, masterKeys, recoveryKeys, _, _ := TestCoreUnsealedWithConfigs(t, bc, rc)

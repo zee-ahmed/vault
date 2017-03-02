@@ -114,6 +114,7 @@ func TestCore_GenerateRoot_InvalidMasterNonce(t *testing.T) {
 	bc, rc := TestSealDefConfigs()
 	bc.SecretShares = 1
 	bc.SecretThreshold = 1
+	bc.KeyIdentifierNames = "one"
 	bc.StoredShares = 0
 	c, masterKeys, _, _, _ := TestCoreUnsealedWithConfigs(t, bc, rc)
 	c.seal.(*TestSeal).recoveryKeysDisabled = true
