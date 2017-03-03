@@ -17,3 +17,5 @@
 
 //= require demo
 //= require_tree ./demo
+
+//= require hashicorp/mega-nav
