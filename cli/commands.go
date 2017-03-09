@@ -91,8 +91,20 @@ func Commands(metaPtr *meta.Meta) map[string]cli.CommandFactory {
 			}, nil
 		},
 
+		"ssh-agent": func() (cli.Command, error) {
+			return &command.SSHAgentCommand{
+				Meta: *metaPtr,
+			}, nil
+		},
+
 		"ssh": func() (cli.Command, error) {
 			return &command.SSHCommand{
+				Meta: *metaPtr,
+			}, nil
+		},
+
+		"ssh-agent": func() (cli.Command, error) {
+			return &command.SSHAgentCommand{
 				Meta: *metaPtr,
 			}, nil
 		},
