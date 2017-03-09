@@ -30,6 +30,7 @@ func Backend() *backend {
 			pathListRoles(&b),
 			pathUser(&b),
 			pathSTS(&b),
+			pathConsole(&b),
 		},
 
 		Secrets: []*framework.Secret{

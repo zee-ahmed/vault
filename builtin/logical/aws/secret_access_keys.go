@@ -34,6 +34,10 @@ func secretAccessKeys(b *backend) *framework.Secret {
 				Type:        framework.TypeString,
 				Description: "Security Token",
 			},
+			"signin_url": &framework.FieldSchema{
+				Type:        framework.TypeString,
+				Description: "Federation Signin URL",
+			},
 		},
 
 		Renew:  b.secretAccessKeysRenew,
