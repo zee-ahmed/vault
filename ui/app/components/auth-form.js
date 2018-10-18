@@ -45,6 +45,7 @@ export default Component.extend(DEFAULTS, {
   redirectTo: null,
   namespace: null,
   wrappedToken: null,
+  callback: null,
   // internal
   oldNamespace: null,
 
@@ -57,6 +58,7 @@ export default Component.extend(DEFAULTS, {
       namespace: ns,
       selectedAuth: newMethod,
       oldSelectedAuth: oldMethod,
+      callback: cb,
     } = this;
 
     next(() => {
@@ -73,6 +75,9 @@ export default Component.extend(DEFAULTS, {
         this.resetDefaults();
       }
       this.set('oldSelectedAuth', newMethod);
+      if (cb && cb.state && cb.code) {
+        this.get('handleCallback').perform(cb);
+      }
     });
   },
 
@@ -155,6 +160,19 @@ export default Component.extend(DEFAULTS, {
     return shownMethods.length ? shownMethods : BACKENDS;
   }),
 
+  handleCallback: task(function*(callback){
+    let adapter = this.get('store').adapterFor('auth-callback');
+    try {
+      let response = yield adapter.callbackAction(null, callback);
+      this.set('selectedAuth', 'token');
+      this.set('token', response.auth.client_token);
+      this.send('doSubmit');
+    } catch (e) {
+      this.set('callback', null);
+      this.set('error', `callback handle failed: ${e.errors[0]}`);
+    }
+  }),
+
   unwrapToken: task(function*(token) {
     // will be using the Token Auth Method, so set it here
     this.set('selectedAuth', 'token');
@@ -185,7 +203,7 @@ export default Component.extend(DEFAULTS, {
     }
   }).withTestWaiter(),
 
-  showLoading: or('isLoading', 'authenticate.isRunning', 'fetchMethods.isRunning', 'unwrapToken.isRunning'),
+  showLoading: or('isLoading', 'authenticate.isRunning', 'fetchMethods.isRunning', 'unwrapToken.isRunning', 'handleCallback.isRunning'),
 
   handleError(e, prefixMessage = true) {
     this.set('loading', false);
@@ -261,6 +279,11 @@ export default Component.extend(DEFAULTS, {
       }
       if (this.get('customPath') || get(backend, 'id')) {
         data.path = this.get('customPath') || get(backend, 'id');
+      }
+
+      let callback = this.get('callback') || null;
+      if (callback) {
+          data = assign(data, callback)
       }
       return this.authenticate.unlinked().perform(backend.type, data);
     },
