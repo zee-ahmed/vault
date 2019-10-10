@@ -11,6 +11,7 @@ require (
 	github.com/Azure/azure-sdk-for-go v36.2.0+incompatible
 	github.com/Azure/go-autorest/autorest v0.9.2
 	github.com/DataDog/zstd v1.4.4 // indirect
+	github.com/LeSuisse/vault-gpg-plugin v0.2.4
 	github.com/NYTimes/gziphandler v1.1.1
 	github.com/SAP/go-hdb v0.14.1
 	github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6 // indirect

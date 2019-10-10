@@ -34,6 +34,7 @@ import (
 	"github.com/hashicorp/vault/sdk/helper/consts"
 	"github.com/hashicorp/vault/sdk/logical"
 
+	logicalGpg "github.com/LeSuisse/vault-gpg-plugin/gpg"
 	logicalAd "github.com/hashicorp/vault-plugin-secrets-ad/plugin"
 	logicalAlicloud "github.com/hashicorp/vault-plugin-secrets-alicloud"
 	logicalAzure "github.com/hashicorp/vault-plugin-secrets-azure"
@@ -132,6 +133,7 @@ func newRegistry() *registry {
 			"ssh":          logicalSsh.Factory,
 			"totp":         logicalTotp.Factory,
 			"transit":      logicalTransit.Factory,
+			"gpg":          logicalGpg.Factory,
 		},
 	}
 
