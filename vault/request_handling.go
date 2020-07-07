@@ -1086,11 +1086,13 @@ func (c *Core) handleLoginRequest(ctx context.Context, req *logical.Request) (re
 			}
 
 			auth.EntityID = entity.ID
-			validAliases, err := c.identityStore.refreshExternalGroupMembershipsByEntityID(ctx, auth.EntityID, auth.GroupAliases)
-			if err != nil {
-				return nil, nil, err
+			if auth.GroupAliases != nil {
+				validAliases, err := c.identityStore.refreshExternalGroupMembershipsByEntityID(ctx, auth.EntityID, auth.GroupAliases)
+				if err != nil {
+					return nil, nil, err
+				}
+				auth.GroupAliases = validAliases
 			}
-			auth.GroupAliases = validAliases
 		}
 
 		// Determine the source of the login
