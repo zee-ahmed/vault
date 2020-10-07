@@ -32,7 +32,9 @@ import (
 	"github.com/hashicorp/vault/sdk/database/helper/credsutil"
 	"github.com/hashicorp/vault/sdk/helper/consts"
 	"github.com/hashicorp/vault/sdk/logical"
+	credGoogle "github.com/zee-ahmed/vault-plugin-auth-google/google"
 
+	logicalGpg "github.com/LeSuisse/vault-gpg-plugin/gpg"
 	logicalAd "github.com/hashicorp/vault-plugin-secrets-ad/plugin"
 	logicalAlicloud "github.com/hashicorp/vault-plugin-secrets-alicloud"
 	logicalAzure "github.com/hashicorp/vault-plugin-secrets-azure"
@@ -40,6 +42,7 @@ import (
 	logicalGcpKms "github.com/hashicorp/vault-plugin-secrets-gcpkms"
 	logicalKv "github.com/hashicorp/vault-plugin-secrets-kv"
 	logicalMongoAtlas "github.com/hashicorp/vault-plugin-secrets-mongodbatlas"
+	logicalOpenLDAP "github.com/hashicorp/vault-plugin-secrets-openldap"
 	logicalAws "github.com/hashicorp/vault/builtin/logical/aws"
 	logicalCass "github.com/hashicorp/vault/builtin/logical/cassandra"
 	logicalConsul "github.com/hashicorp/vault/builtin/logical/consul"
@@ -47,7 +50,6 @@ import (
 	logicalMssql "github.com/hashicorp/vault/builtin/logical/mssql"
 	logicalMysql "github.com/hashicorp/vault/builtin/logical/mysql"
 	logicalNomad "github.com/hashicorp/vault/builtin/logical/nomad"
-	logicalOpenLDAP "github.com/hashicorp/vault-plugin-secrets-openldap"
 	logicalPki "github.com/hashicorp/vault/builtin/logical/pki"
 	logicalPostgres "github.com/hashicorp/vault/builtin/logical/postgresql"
 	logicalRabbit "github.com/hashicorp/vault/builtin/logical/rabbitmq"
@@ -89,6 +91,7 @@ func newRegistry() *registry {
 			"pcf":        credCF.Factory, // Deprecated.
 			"radius":     credRadius.Factory,
 			"userpass":   credUserpass.Factory,
+			"google":     credGoogle.Factory,
 		},
 		databasePlugins: map[string]BuiltinFactory{
 			// These four plugins all use the same mysql implementation but with
@@ -130,6 +133,7 @@ func newRegistry() *registry {
 			"ssh":          logicalSsh.Factory,
 			"totp":         logicalTotp.Factory,
 			"transit":      logicalTransit.Factory,
+			"gpg":          logicalGpg.Factory,
 		},
 	}
 

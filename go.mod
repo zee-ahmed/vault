@@ -11,6 +11,7 @@ require (
 	github.com/Azure/azure-sdk-for-go v36.2.0+incompatible
 	github.com/Azure/go-autorest/autorest v0.9.2
 	github.com/DataDog/zstd v1.4.4 // indirect
+	github.com/LeSuisse/vault-gpg-plugin v0.2.4
 	github.com/NYTimes/gziphandler v1.1.1
 	github.com/SAP/go-hdb v0.14.1
 	github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6 // indirect
@@ -136,6 +137,7 @@ require (
 	github.com/xdg/scram v0.0.0-20180814205039-7eeb5667e42c // indirect
 	github.com/xdg/stringprep v1.0.0 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
+	github.com/zee-ahmed/vault-plugin-auth-google v0.0.0-20201007201145-5618fe85e585 // indirect
 	go.etcd.io/bbolt v1.3.3
 	go.etcd.io/etcd v0.5.0-alpha.5.0.20191023171146-3cf2f69b5738
 	go.mongodb.org/mongo-driver v1.2.1
